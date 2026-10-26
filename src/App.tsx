@@ -11,20 +11,22 @@ import {
 } from './data'
 import './App.css'
 
-const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' }[] = [
+const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' | 'check' }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { id: 'reports', label: 'Outage reports', icon: 'alert' },
+  { id: 'review', label: 'Review reports', icon: 'check' },
   { id: 'water-points', label: 'Water points', icon: 'drop' },
 ]
 
 const pageTitles: Record<Page, string> = {
   dashboard: 'Community overview',
   reports: 'Outage reports',
+  review: 'Review reports',
   'water-points': 'Water points',
   details: 'Incident details',
 }
 
-const reportStatuses: IncidentStatus[] = ['Unverified', 'Investigating', 'Monitoring', 'Resolved']
+const reportStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'Confirmed', 'Resolved', 'Rejected']
 const reportCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
 
 function Icon({
@@ -67,11 +69,11 @@ function Icon({
 }
 
 function StatusBadge({ status }: { status: Incident['status'] }) {
-  return <span className={`status-badge status-${status.toLowerCase()}`}>{status}</span>
+  return <span className={`status-badge status-${status.toLowerCase().replaceAll(' ', '-')}`}>{status}</span>
 }
 
 function ReportOriginLabel({ origin }: { origin: Incident['origin'] }) {
-  return <span className={`report-origin report-origin-${origin}`}>{origin === 'sample' ? 'Sample · fictional' : 'User-submitted · unverified'}</span>
+  return <span className={`report-origin report-origin-${origin}`}>{origin === 'sample' ? 'Sample · fictional' : 'User-submitted'}</span>
 }
 
 function IncidentRow({
@@ -111,6 +113,7 @@ function App() {
   const [reportFormError, setReportFormError] = useState('')
   const [reportFeedback, setReportFeedback] = useState('')
   const [observedAtDefault, setObservedAtDefault] = useState('')
+  const [reviewFeedback, setReviewFeedback] = useState<Record<string, string>>({})
 
   const allIncidents = useMemo(() => [...storedData.incidents, ...sampleIncidents], [storedData.incidents])
 
@@ -178,6 +181,7 @@ function App() {
       observedAt,
       severity,
       status: 'Unverified',
+      statusHistory: [],
       description,
       statusDescription: 'This community-submitted report has not been independently verified.',
       updates: [{
@@ -199,6 +203,63 @@ function App() {
       setStorageNotice('Browser storage is unavailable. New reports are only kept for this session.')
     }
     setReportSubmitted(true)
+  }
+
+  function updateIncidentStatus(event: FormEvent<HTMLFormElement>, incident: Incident) {
+    event.preventDefault()
+    const formData = new FormData(event.currentTarget)
+    const nextStatus = String(formData.get('status') ?? '') as IncidentStatus
+    const note = String(formData.get('note') ?? '').trim()
+
+    if (incident.origin !== 'user') {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Fictional sample reports are read-only.' }))
+      return
+    }
+    if (!reportStatuses.includes(nextStatus)) {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Choose a valid status before saving.' }))
+      return
+    }
+    if (nextStatus === incident.status) {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Choose a different status to record a change.' }))
+      return
+    }
+
+    const timestamp = new Date().toISOString()
+    const readableTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp))
+    const statusChange = {
+      timestamp,
+      previousStatus: incident.status,
+      newStatus: nextStatus,
+      note,
+    }
+    const updatedIncidents = storedData.incidents.map((item) => item.id === incident.id
+      ? {
+          ...item,
+          status: nextStatus,
+          statusDescription: note
+            ? `${note} Status is managed locally in this prototype and is not official verification.`
+            : `Status updated locally to ${nextStatus}. This is not an official review or verification.`,
+          statusHistory: [...item.statusHistory, statusChange],
+          updates: [...item.updates, {
+            time: readableTimestamp,
+            title: `Status changed: ${incident.status} → ${nextStatus}`,
+            description: note || 'No note provided.',
+          }],
+        }
+      : item)
+
+    try {
+      saveUserIncidents(updatedIncidents)
+    } catch {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Could not save this change to browser storage. No change was made.' }))
+      return
+    }
+
+    const updatedIncident = updatedIncidents.find((item) => item.id === incident.id)
+    if (updatedIncident && selectedIncident.id === incident.id) setSelectedIncident(updatedIncident)
+    setStoredData({ incidents: updatedIncidents, warning: null })
+    setStorageNotice(null)
+    setReviewFeedback((current) => ({ ...current, [incident.id]: 'Update saved in this browser. It has not been sent to a municipality.' }))
   }
 
   return (
@@ -249,7 +310,7 @@ function App() {
             <div>
               <div className="eyebrow">AQUATRACE <span> / </span> COMMUNITY</div>
               <h1>{pageTitles[page]}</h1>
-              <p>{page === 'dashboard' ? 'A clearer view of water interruptions and nearby alternatives.' : page === 'reports' ? 'Browse reported interruptions and follow their latest status.' : page === 'water-points' ? 'Explore alternative water sources in your area.' : 'Follow the timeline and details of this report.'}</p>
+              <p>{page === 'dashboard' ? 'A clearer view of water interruptions and nearby alternatives.' : page === 'reports' ? 'Browse reported interruptions and follow their latest status.' : page === 'review' ? 'Review local submissions and record an explicit status update.' : page === 'water-points' ? 'Explore alternative water sources in your area.' : 'Follow the timeline and details of this report.'}</p>
             </div>
             {page === 'details' && <button className="button button-secondary back-button" type="button" onClick={() => navigate('reports')}>← All reports</button>}
           </div>
@@ -259,13 +320,13 @@ function App() {
             <>
               <div className="notice-banner">
                 <span className="notice-icon"><Icon name="alert" size={17} /></span>
-                <p><strong>Sample reports and water points are fictional.</strong> User-submitted reports are stored in this browser and remain unverified.</p>
+                <p><strong>Sample reports and water points are fictional.</strong> User-submitted report statuses are local prototype records, not official verification.</p>
                 <ReportOriginLabel origin="sample" />
               </div>
 
               <section className="metric-grid" aria-label="Community overview metrics">
                 <article className="metric-card"><span className="metric-label">Total reports</span><strong>{allIncidents.length}</strong><span className="metric-note"><span className="metric-bullet blue" />Sample and user-submitted</span><span className="metric-icon"><Icon name="alert" size={19} /></span></article>
-                <article className="metric-card"><span className="metric-label">Open reports</span><strong>{allIncidents.filter((item) => item.status !== 'Resolved').length}</strong><span className="metric-note"><span className="metric-bullet amber" />Includes unverified reports</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">Open reports</span><strong>{allIncidents.filter((item) => item.status !== 'Resolved' && item.status !== 'Rejected').length}</strong><span className="metric-note"><span className="metric-bullet amber" />Includes unverified reports</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
                 <article className="metric-card"><span className="metric-label">Water points listed</span><strong>{waterPoints.length}</strong><span className="metric-note"><span className="metric-bullet green" />All require verification</span><span className="metric-icon"><Icon name="drop" size={19} /></span></article>
               </section>
 
@@ -280,7 +341,8 @@ function App() {
                   <div className="status-breakdown">
                     {reportStatuses.map((status) => {
                       const count = allIncidents.filter((incident) => incident.status === status).length
-                      return <div className="status-line" key={status}><span className={`status-dot dot-${status.toLowerCase()}`} /><span>{status}</span><span className="status-line-track"><span className={`status-line-fill fill-${status.toLowerCase()}`} style={{ width: `${allIncidents.length ? (count / allIncidents.length) * 100 : 0}%` }} /></span><strong>{count}</strong></div>
+                      const statusClass = status.toLowerCase().replaceAll(' ', '-')
+                      return <div className="status-line" key={status}><span className={`status-dot dot-${statusClass}`} /><span>{status}</span><span className="status-line-track"><span className={`status-line-fill fill-${statusClass}`} style={{ width: `${allIncidents.length ? (count / allIncidents.length) * 100 : 0}%` }} /></span><strong>{count}</strong></div>
                     })}
                   </div>
                   <div className="status-disclaimer"><Icon name="check" size={15} /><span>User submissions start unverified</span></div>
@@ -303,6 +365,59 @@ function App() {
             </section>
           )}
 
+          {page === 'review' && (
+            <section className="review-view">
+              <div className="review-disclaimer">
+                <Icon name="alert" size={17} />
+                <p><strong>Local prototype only.</strong> This reviewer workflow is not authenticated or secure, and status changes are saved only in this browser. No municipality receives reports or updates.</p>
+              </div>
+              {!storedData.incidents.length && (
+                <div className="empty-state review-empty" role="status">
+                  <Icon name="check" size={22} />
+                  <strong>No user-submitted reports to review</strong>
+                  <span>New reports will appear here with Unverified status.</span>
+                </div>
+              )}
+              <div className="review-list">
+                {allIncidents.map((incident) => (
+                  <article className={`panel review-card ${incident.origin === 'sample' ? 'review-card-sample' : ''}`} key={incident.id}>
+                    <div className="review-card-header">
+                      <div>
+                        <div className="review-card-kicker">{incident.origin === 'sample' ? 'READ-ONLY SAMPLE' : 'USER SUBMISSION'} <span>·</span> {incident.id}</div>
+                        <h2>{incident.title}</h2>
+                      </div>
+                      <div className="review-card-actions"><StatusBadge status={incident.status} /><button className="text-button" type="button" onClick={() => selectIncident(incident)}>View details</button></div>
+                    </div>
+                    <div className="review-fields">
+                      <div><span>Location</span><strong>{incident.area}</strong></div>
+                      <div><span>Category</span><strong>{incident.category}</strong></div>
+                      <div><span>Severity</span><strong>{incident.severity}</strong></div>
+                      <div><span>Observed</span><strong>{incident.origin === 'sample' ? incident.observedAt : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.observedAt))}</strong></div>
+                      <div className="review-field-description"><span>Description</span><p>{incident.description}</p></div>
+                      <div><span>Submission origin</span><ReportOriginLabel origin={incident.origin} /></div>
+                    </div>
+                    {incident.origin === 'sample' ? (
+                      <p className="sample-readonly-note">Fictional demonstration report. Its status and history cannot be changed.</p>
+                    ) : (
+                      <form className="review-form" onSubmit={(event) => updateIncidentStatus(event, incident)}>
+                        <label className="review-status-field" htmlFor={`review-status-${incident.id}`}>Update status
+                          <select id={`review-status-${incident.id}`} name="status" defaultValue={incident.status}>
+                            {reportStatuses.map((status) => <option key={status}>{status}</option>)}
+                          </select>
+                        </label>
+                        <label className="review-note-field" htmlFor={`review-note-${incident.id}`}>Optional note
+                          <input id={`review-note-${incident.id}`} name="note" maxLength={240} placeholder="Short reason or context" />
+                        </label>
+                        <button className="button button-primary" type="submit">Save update</button>
+                        {reviewFeedback[incident.id] && <p className={`review-feedback ${reviewFeedback[incident.id].startsWith('Update saved') ? 'review-feedback-success' : ''}`} role="status">{reviewFeedback[incident.id]}</p>}
+                      </form>
+                    )}
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
           {page === 'water-points' && (
             <section className="panel listing-panel">
               <div className="listing-heading"><div><h2>Alternative water points</h2><p>Sample directory · availability must be confirmed locally</p></div><ReportOriginLabel origin="sample" /></div>
@@ -319,15 +434,27 @@ function App() {
               <section className="panel detail-panel">
                 <div className="detail-topline"><span className={`severity-tag severity-tag-${selectedIncident.severity.toLowerCase()}`}>{selectedIncident.severity} severity</span><StatusBadge status={selectedIncident.status} /></div>
                 <h2 className="detail-title">{selectedIncident.title}</h2>
+                <div className="detail-report-id">Report ID: <code>{selectedIncident.id}</code></div>
                 <div className="detail-meta"><span><Icon name="pin" size={16} />{selectedIncident.area}</span><span><Icon name="clock" size={16} />Reported {selectedIncident.reported}</span><span>Observed: {selectedIncident.origin === 'sample' ? selectedIncident.observedAt : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selectedIncident.observedAt))}</span></div>
-                <div className="detail-sample"><ReportOriginLabel origin={selectedIncident.origin} /></div>
+                <div className="detail-sample"><ReportOriginLabel origin={selectedIncident.origin} /><span className="detail-category">{selectedIncident.category}</span></div>
+                {selectedIncident.origin === 'user' && <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>}
                 <div className="detail-section"><h3>About this report</h3><p>{selectedIncident.description}</p></div>
                 <div className="detail-section"><h3>What this status means</h3><p>{selectedIncident.statusDescription}</p></div>
-                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>{selectedIncident.origin === 'sample' ? 'This fictional sample report does not describe a confirmed outage.' : 'This user-submitted report is unverified. AquaTrace has not contacted an authority.'}</span></div>
+                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>{selectedIncident.origin === 'sample' ? 'This fictional sample report does not describe a confirmed outage.' : 'This user-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.'}</span></div>
               </section>
               <section className="panel timeline-panel">
                 <div className="panel-heading"><div><h2>Update history</h2><p>{selectedIncident.origin === 'sample' ? 'Sample report timeline' : 'Updates for this submission'}</p></div><Icon name="clock" size={18} /></div>
                 <ol className="timeline">{selectedIncident.updates.map((update, index) => <li className="timeline-entry" key={`${update.time}-${index}`}><span className={`timeline-marker ${index === 0 ? 'timeline-marker-current' : ''}`} /><div><span className="timeline-time">{update.time}</span><strong>{update.title}</strong><p>{update.description}</p></div></li>)}</ol>
+                <div className="status-history">
+                  <h3>Status change history</h3>
+                  {selectedIncident.statusHistory.length ? selectedIncident.statusHistory.map((change, index) => (
+                    <article className="status-history-entry" key={`${change.timestamp}-${index}`}>
+                      <span>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(change.timestamp))}</span>
+                      <p><StatusBadge status={change.previousStatus} /> <span aria-label="changed to">→</span> <StatusBadge status={change.newStatus} /></p>
+                      {change.note && <p className="status-history-note">{change.note}</p>}
+                    </article>
+                  )) : <p className="history-empty">No status changes have been recorded.</p>}
+                </div>
               </section>
             </div>
           )}
