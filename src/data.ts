@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'reports' | 'review' | 'water-points' | 'details'
+export type Page = 'dashboard' | 'reports' | 'review' | 'insights' | 'water-points' | 'details'
 export type IncidentCategory = 'Water outage' | 'Low water pressure' | 'Water quality concern' | 'Other'
 export type IncidentStatus = 'Unverified' | 'Under review' | 'Confirmed' | 'Resolved' | 'Rejected'
 
@@ -146,27 +146,43 @@ const incidentStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'Confi
 const legacyIncidentStatuses = ['Investigating', 'Monitoring']
 const incidentCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
 const severities: Incident['severity'][] = ['High', 'Medium', 'Low']
+const maxFieldLengths = { id: 100, title: 120, area: 100, reported: 100, observedAt: 40, description: 1000, statusDescription: 500 }
+const sampleIncidentIds = new Set(incidents.map((incident) => incident.id))
+
+function isValidStoredStatus(value: unknown): boolean {
+  return incidentStatuses.includes(value as IncidentStatus) || legacyIncidentStatuses.includes(String(value))
+}
+
+function migrateStatus(value: unknown): IncidentStatus {
+  return value === 'Investigating' || value === 'Monitoring' ? 'Under review' : value as IncidentStatus
+}
+
+function isNonEmptyString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength
+}
 
 function isIncidentRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
   return record.origin === 'user'
-    && typeof record.id === 'string'
-    && typeof record.title === 'string'
-    && typeof record.area === 'string'
-    && typeof record.reported === 'string'
-    && typeof record.observedAt === 'string'
+    && isNonEmptyString(record.id, maxFieldLengths.id)
+    && isNonEmptyString(record.title, maxFieldLengths.title)
+    && isNonEmptyString(record.area, maxFieldLengths.area)
+    && isNonEmptyString(record.reported, maxFieldLengths.reported)
+    && isNonEmptyString(record.observedAt, maxFieldLengths.observedAt)
     && !Number.isNaN(Date.parse(record.observedAt))
-    && typeof record.description === 'string'
-    && typeof record.statusDescription === 'string'
+    && isNonEmptyString(record.description, maxFieldLengths.description)
+    && isNonEmptyString(record.statusDescription, maxFieldLengths.statusDescription)
     && incidentCategories.includes(record.category as IncidentCategory)
-    && (incidentStatuses.includes(record.status as IncidentStatus) || legacyIncidentStatuses.includes(String(record.status)))
+    && isValidStoredStatus(record.status)
     && severities.includes(record.severity as Incident['severity'])
     && Array.isArray(record.updates)
     && record.updates.every((update: unknown) => {
       if (!update || typeof update !== 'object') return false
       const item = update as Record<string, unknown>
-      return typeof item.time === 'string' && typeof item.title === 'string' && typeof item.description === 'string'
+      return isNonEmptyString(item.time, 100)
+        && isNonEmptyString(item.title, 120)
+        && isNonEmptyString(item.description, 1000)
     })
     && (record.statusHistory === undefined || (
       Array.isArray(record.statusHistory)
@@ -175,49 +191,84 @@ function isIncidentRecord(value: unknown): value is Record<string, unknown> {
         const item = change as Record<string, unknown>
         return typeof item.timestamp === 'string'
           && !Number.isNaN(Date.parse(item.timestamp))
-          && incidentStatuses.includes(item.previousStatus as IncidentStatus)
-          && incidentStatuses.includes(item.newStatus as IncidentStatus)
+          && isValidStoredStatus(item.previousStatus)
+          && isValidStoredStatus(item.newStatus)
+          && item.previousStatus !== item.newStatus
           && typeof item.note === 'string'
+          && item.note.length <= 240
       })
     ))
 }
 
 function normalizeIncident(record: Record<string, unknown>): Incident {
-  const legacyStatus = record.status
-  const status: IncidentStatus = legacyStatus === 'Investigating' || legacyStatus === 'Monitoring'
-    ? 'Under review'
-    : legacyStatus as IncidentStatus
+  const status = migrateStatus(record.status)
+  const statusHistory = ((record.statusHistory ?? []) as IncidentStatusChange[]).map((change) => ({
+    ...change,
+    previousStatus: migrateStatus(change.previousStatus),
+    newStatus: migrateStatus(change.newStatus),
+  }))
   return {
     ...record,
     status,
-    statusHistory: (record.statusHistory ?? []) as IncidentStatusChange[],
+    statusHistory,
   } as Incident
 }
 
-export function loadUserIncidents(): { incidents: Incident[]; warning: string | null } {
+export function loadUserIncidents(): {
+  incidents: Incident[]
+  warning: string | null
+  canPersist: boolean
+  storageSnapshot: string | null
+} {
   try {
     const saved = window.localStorage.getItem('aquatrace-user-reports')
-    if (!saved) return { incidents: [], warning: null }
+    if (saved === null) return { incidents: [], warning: null, canPersist: true, storageSnapshot: null }
 
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) {
-      return { incidents: [], warning: 'Saved reports could not be read. New reports can still be added in this session.' }
+      return {
+        incidents: [],
+        warning: 'Saved reports are malformed and have been preserved. New reports are session-only until this data is repaired or cleared.',
+        canPersist: false,
+        storageSnapshot: saved,
+      }
     }
 
-    const validIncidents = parsed
-      .filter(isIncidentRecord)
-      .map(normalizeIncident)
+    const seenIds = new Set<string>(sampleIncidentIds)
+    const validIncidents: Incident[] = []
+    let invalidRecordFound = false
+    for (const item of parsed) {
+      if (!isIncidentRecord(item) || typeof item.id !== 'string' || seenIds.has(item.id)) {
+        invalidRecordFound = true
+        continue
+      }
+      seenIds.add(item.id)
+      validIncidents.push(normalizeIncident(item))
+    }
     return {
       incidents: validIncidents,
-      warning: validIncidents.length === parsed.length
-        ? null
-        : 'Some saved reports were invalid and have been skipped.',
+      warning: invalidRecordFound
+        ? 'Some saved reports are invalid or have duplicate IDs. The original data is preserved; new reports are session-only until this data is repaired or cleared.'
+        : null,
+      canPersist: !invalidRecordFound,
+      storageSnapshot: saved,
     }
   } catch {
-    return { incidents: [], warning: 'Saved reports are unavailable. New reports can still be added in this session.' }
+    return {
+      incidents: [],
+      warning: 'Saved reports are unavailable. New reports are session-only until browser storage is available.',
+      canPersist: false,
+      storageSnapshot: null,
+    }
   }
 }
 
-export function saveUserIncidents(userIncidents: Incident[]): void {
-  window.localStorage.setItem('aquatrace-user-reports', JSON.stringify(userIncidents))
+export function saveUserIncidents(userIncidents: Incident[], expectedSnapshot: string | null): string {
+  const currentSnapshot = window.localStorage.getItem('aquatrace-user-reports')
+  if (currentSnapshot !== expectedSnapshot) {
+    throw new Error('Saved reports changed since they were loaded.')
+  }
+  const nextSnapshot = JSON.stringify(userIncidents)
+  window.localStorage.setItem('aquatrace-user-reports', nextSnapshot)
+  return nextSnapshot
 }

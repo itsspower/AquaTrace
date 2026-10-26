@@ -15,6 +15,7 @@ const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' | 'check
   { id: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { id: 'reports', label: 'Outage reports', icon: 'alert' },
   { id: 'review', label: 'Review reports', icon: 'check' },
+  { id: 'insights', label: 'Insights', icon: 'grid' },
   { id: 'water-points', label: 'Water points', icon: 'drop' },
 ]
 
@@ -22,6 +23,7 @@ const pageTitles: Record<Page, string> = {
   dashboard: 'Community overview',
   reports: 'Outage reports',
   review: 'Review reports',
+  insights: 'Outage insights',
   'water-points': 'Water points',
   details: 'Incident details',
 }
@@ -98,11 +100,39 @@ function IncidentRow({
   )
 }
 
+interface InsightCount {
+  label: string
+  total: number
+  user: number
+  sample: number
+}
+
+function InsightBreakdown({ title, description, entries }: { title: string; description: string; entries: InsightCount[] }) {
+  const max = Math.max(1, ...entries.map((entry) => entry.total))
+  return (
+    <section className="panel insight-panel">
+      <div className="panel-heading"><div><h2>{title}</h2><p>{description}</p></div></div>
+      {entries.length ? (
+        <ul className="insight-list">
+          {entries.map((entry) => (
+            <li className="insight-row" key={entry.label}>
+              <div className="insight-row-label"><strong>{entry.label}</strong><span>{entry.total} {entry.total === 1 ? 'report' : 'reports'}</span></div>
+              <div className="insight-bar" aria-hidden="true"><span style={{ width: `${(entry.total / max) * 100}%` }} /></div>
+              <div className="insight-origin-counts"><span>Browser-local: <strong>{entry.user}</strong></span><span>Fictional samples: <strong>{entry.sample}</strong></span></div>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="insight-empty">No report data is available for this breakdown.</p>}
+    </section>
+  )
+}
+
 function App() {
   const [page, setPage] = useState<Page>('dashboard')
   const [selectedIncident, setSelectedIncident] = useState<Incident>(sampleIncidents[0])
   const [storedData, setStoredData] = useState(loadUserIncidents)
   const [storageNotice, setStorageNotice] = useState(storedData.warning)
+  const [storageCanPersist, setStorageCanPersist] = useState(storedData.canPersist)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<IncidentStatus | 'All statuses'>('All statuses')
   const [categoryFilter, setCategoryFilter] = useState<IncidentCategory | 'All categories'>('All categories')
@@ -116,6 +146,41 @@ function App() {
   const [reviewFeedback, setReviewFeedback] = useState<Record<string, string>>({})
 
   const allIncidents = useMemo(() => [...storedData.incidents, ...sampleIncidents], [storedData.incidents])
+  const insights = useMemo(() => {
+    const summarize = (selector: (incident: Incident) => string) => {
+      const summary = new Map<string, { label: string; total: number; user: number; sample: number }>()
+      for (const incident of allIncidents) {
+        const key = selector(incident).trim().toLocaleLowerCase()
+        const counts = summary.get(key) ?? { label: selector(incident).trim(), total: 0, user: 0, sample: 0 }
+        counts.total += 1
+        counts[incident.origin] += 1
+        summary.set(key, counts)
+      }
+      return [...summary.values()].sort((left, right) => right.total - left.total || left.label.localeCompare(right.label))
+    }
+    const byMonth = new Map<string, number>()
+    for (const incident of storedData.incidents) {
+      const month = incident.observedAt.slice(0, 7)
+      byMonth.set(month, (byMonth.get(month) ?? 0) + 1)
+    }
+    const userLocationMap = new Map<string, InsightCount>()
+    for (const incident of storedData.incidents) {
+      const key = incident.area.trim().toLocaleLowerCase()
+      const counts = userLocationMap.get(key) ?? { label: incident.area.trim(), total: 0, user: 0, sample: 0 }
+      counts.total += 1
+      counts.user += 1
+      userLocationMap.set(key, counts)
+    }
+    return {
+      byArea: summarize((incident) => incident.area),
+      byCategory: summarize((incident) => incident.category),
+      byStatus: summarize((incident) => incident.status),
+      repeatedUserLocations: [...userLocationMap.values()]
+        .filter((entry) => entry.user > 1)
+        .sort((left, right) => right.user - left.user || left.label.localeCompare(right.label)),
+      byMonth: [...byMonth.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(-6),
+    }
+  }, [allIncidents, storedData.incidents])
 
   const filteredIncidents = useMemo(() => allIncidents.filter((incident) => {
     const searchText = `${incident.title} ${incident.area} ${incident.description} ${incident.category}`.toLowerCase()
@@ -164,15 +229,19 @@ function App() {
     }
 
     const observedDate = new Date(observedAt)
-    if (Number.isNaN(observedDate.getTime())) {
-      setReportFormError('Enter a valid date and time for when you observed the issue.')
+    if (Number.isNaN(observedDate.getTime()) || observedDate.getTime() > Date.now()) {
+      setReportFormError('Enter a valid observation date and time that is not in the future.')
       return
     }
 
     const now = new Date()
     const reported = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(now)
+    let id = ''
+    do {
+      id = `user-${now.getTime()}-${Math.random().toString(36).slice(2, 9)}`
+    } while (allIncidents.some((incident) => incident.id === id))
     const newIncident: Incident = {
-      id: `user-${now.getTime()}-${Math.random().toString(36).slice(2, 9)}`,
+      id,
       origin: 'user',
       category,
       title: category,
@@ -191,16 +260,19 @@ function App() {
       }],
     }
     const updatedReports = [newIncident, ...storedData.incidents]
-    setStoredData({ incidents: updatedReports, warning: null })
     setSelectedIncident(newIncident)
     setReportFormError('')
     setReportFeedback('')
     try {
-      saveUserIncidents(updatedReports)
+      if (!storageCanPersist) throw new Error('Saved records must be repaired before writing.')
+      const storageSnapshot = saveUserIncidents(updatedReports, storedData.storageSnapshot)
+      setStoredData({ incidents: updatedReports, warning: null, canPersist: true, storageSnapshot })
       setStorageNotice(null)
     } catch {
-      setReportFeedback('The report was added for this session, but browser storage is unavailable. It may not remain after you close or refresh this page.')
-      setStorageNotice('Browser storage is unavailable. New reports are only kept for this session.')
+      setReportFeedback('The report was added for this session only. Browser storage may be unavailable or saved data may have changed; existing stored data was not overwritten.')
+      setStorageCanPersist(false)
+      setStoredData({ ...storedData, incidents: updatedReports, canPersist: false })
+      setStorageNotice(storageNotice ?? 'Browser storage is unavailable or changed in another tab. New reports are session-only.')
     }
     setReportSubmitted(true)
   }
@@ -213,6 +285,10 @@ function App() {
 
     if (incident.origin !== 'user') {
       setReviewFeedback((current) => ({ ...current, [incident.id]: 'Fictional sample reports are read-only.' }))
+      return
+    }
+    if (!storageCanPersist) {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Saved reports are unavailable or malformed. No change was made to avoid overwriting stored data.' }))
       return
     }
     if (!reportStatuses.includes(nextStatus)) {
@@ -249,16 +325,18 @@ function App() {
       : item)
 
     try {
-      saveUserIncidents(updatedIncidents)
+      const storageSnapshot = saveUserIncidents(updatedIncidents, storedData.storageSnapshot)
+      const updatedIncident = updatedIncidents.find((item) => item.id === incident.id)
+      if (updatedIncident && selectedIncident.id === incident.id) setSelectedIncident(updatedIncident)
+      setStoredData({ incidents: updatedIncidents, warning: null, canPersist: true, storageSnapshot })
+      setStorageNotice(null)
     } catch {
-      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Could not save this change to browser storage. No change was made.' }))
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Could not save this change because browser storage is unavailable or has changed. No change was made.' }))
+      setStorageCanPersist(false)
+      setStorageNotice('Browser storage is unavailable or changed in another tab. Reload before continuing to avoid overwriting newer data.')
       return
     }
 
-    const updatedIncident = updatedIncidents.find((item) => item.id === incident.id)
-    if (updatedIncident && selectedIncident.id === incident.id) setSelectedIncident(updatedIncident)
-    setStoredData({ incidents: updatedIncidents, warning: null })
-    setStorageNotice(null)
     setReviewFeedback((current) => ({ ...current, [incident.id]: 'Update saved in this browser. It has not been sent to a municipality.' }))
   }
 
@@ -362,6 +440,51 @@ function App() {
                 {(query || statusFilter !== 'All statuses' || categoryFilter !== 'All categories') && <button className="clear-filters-button" type="button" onClick={() => { setQuery(''); setStatusFilter('All statuses'); setCategoryFilter('All categories') }}>Reset filters</button>}
               </div>
               {filteredIncidents.length ? <div className="incident-list listing-rows">{filteredIncidents.map((incident) => <IncidentRow key={incident.id} incident={incident} onSelect={selectIncident} />)}</div> : <div className="empty-state"><Icon name="search" size={22} /><strong>{allIncidents.length ? 'No reports match these filters' : 'No reports yet'}</strong><span>Try another search or reset your filters.</span></div>}
+            </section>
+          )}
+
+          {page === 'insights' && (
+            <section className="insights-view">
+              <div className="insights-context">
+                <div className="insight-summary">
+                  <article><span>All displayed reports</span><strong>{allIncidents.length}</strong></article>
+                  <article><span>Browser-local submissions</span><strong>{storedData.incidents.length}</strong></article>
+                  <article><span>Fictional sample reports</span><strong>{allIncidents.filter((incident) => incident.origin === 'sample').length}</strong></article>
+                </div>
+                <p>Counts combine the current browser's saved reports with the clearly marked fictional examples. Sample records are excluded from user-submitted time and repeat-location analysis.</p>
+              </div>
+
+              <div className="insights-grid">
+                <InsightBreakdown title="Reports by location" description="Area names as entered; different spellings may be counted separately." entries={insights.byArea} />
+                <InsightBreakdown title="Reports by category" description="Counts from sample and browser-local submissions." entries={insights.byCategory} />
+                <InsightBreakdown title="Reports by status" description="Current statuses; resolved and rejected remain distinct." entries={insights.byStatus} />
+              </div>
+
+              <section className="panel pattern-panel">
+                <div className="panel-heading"><div><h2>Possible repeat locations</h2><p>Based only on user-submitted reports stored in this browser</p></div><ReportOriginLabel origin="user" /></div>
+                {insights.repeatedUserLocations.length ? (
+                  <>
+                    <ul className="repeat-location-list">{insights.repeatedUserLocations.map((location) => <li key={location.label}><strong>{location.label}</strong><span>{location.user} reports</span></li>)}</ul>
+                    <p className="caution-copy">Multiple reports in one named area may be duplicates or separate observations. This is a possible reporting pattern, not evidence of recurring infrastructure failure.</p>
+                  </>
+                ) : (
+                  <div className="insight-empty"><strong>Not enough matching reports to identify a repeat location.</strong><span>At least two browser-local reports with the same entered area are needed for this comparison.</span></div>
+                )}
+              </section>
+
+              <section className="panel time-insight-panel">
+                <div className="panel-heading"><div><h2>Reports over time</h2><p>Latest six months with reports · browser-local submissions only</p></div><Icon name="clock" size={18} /></div>
+                {insights.byMonth.length ? (
+                  <ul className="time-insight-list">{insights.byMonth.map(([month, count]) => <li key={month}><span>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T00:00:00Z`))}</span><span className="time-insight-bar" aria-hidden="true"><span style={{ width: `${(count / Math.max(...insights.byMonth.map(([, value]) => value))) * 100}%` }} /></span><strong>{count}</strong></li>)}</ul>
+                ) : <p className="insight-empty">No user-submitted observation dates are available yet. Fictional sample dates are excluded from this summary.</p>}
+              </section>
+
+              <section className="panel insight-guidance">
+                <div><span className="guidance-step">1</span><h2>Review possible duplicates</h2><p>Compare description, entered area, and observation time before treating similar reports as separate events.</p></div>
+                <div><span className="guidance-step">2</span><h2>Check evidence and status</h2><p>Look for independent observations and current, reliable service updates. A local reviewer status alone is not external confirmation.</p></div>
+                <div><span className="guidance-step">3</span><h2>Compare over time</h2><p>Use consistent area names and dates across a longer period before proposing that a pattern may be recurring.</p></div>
+                <p className="insight-boundary"><strong>What these insights cannot establish:</strong> root cause, outage prediction, service failure, or municipal performance. Confirming a suspected pattern would require deduplicated reports, consistent timestamps and locations, corroborating observations, and independently sourced service information.</p>
+              </section>
             </section>
           )}
 
