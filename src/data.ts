@@ -268,6 +268,31 @@ export function saveUserIncidents(userIncidents: Incident[], expectedSnapshot: s
   if (currentSnapshot !== expectedSnapshot) {
     throw new Error('Saved reports changed since they were loaded.')
   }
+  if (currentSnapshot !== null) {
+    let currentRecords: unknown
+    try {
+      currentRecords = JSON.parse(currentSnapshot)
+    } catch {
+      throw new Error('Saved reports are malformed and cannot be safely overwritten.')
+    }
+    if (!Array.isArray(currentRecords)) {
+      throw new Error('Saved reports are malformed and cannot be safely overwritten.')
+    }
+    const currentIds = new Set<string>(sampleIncidentIds)
+    for (const record of currentRecords) {
+      if (!isIncidentRecord(record) || typeof record.id !== 'string' || currentIds.has(record.id)) {
+        throw new Error('Saved reports are invalid or contain duplicate IDs.')
+      }
+      currentIds.add(record.id)
+    }
+  }
+  const proposedIds = new Set<string>(sampleIncidentIds)
+  for (const incident of userIncidents) {
+    if (!isIncidentRecord(incident) || typeof incident.id !== 'string' || proposedIds.has(incident.id)) {
+      throw new Error('New reports are invalid or contain duplicate IDs.')
+    }
+    proposedIds.add(incident.id)
+  }
   const nextSnapshot = JSON.stringify(userIncidents)
   window.localStorage.setItem('aquatrace-user-reports', nextSnapshot)
   return nextSnapshot

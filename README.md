@@ -29,6 +29,8 @@ npm run lint
 npm run build
 ```
 
+There is no automated browser/end-to-end test suite in this project. Use the manual journey checklist below when reviewing interactive flows.
+
 ## Data, privacy, and limitations
 
 - There is no backend, account system, municipal connection, external API, or cross-device synchronization.
@@ -41,6 +43,16 @@ npm run build
 - No research findings, pilot results, partnerships, or impact outcomes are claimed by this repository.
 
 See [docs/system-design.md](docs/system-design.md) for the system-thinking framing, assumptions, and proposed pilot measures.
+
+### Manual journey checklist
+
+1. Open Dashboard and verify sample reports and water points are clearly marked fictional.
+2. Submit a valid report and confirm it appears with **Unverified** status; try missing fields and a future observation time to check validation.
+3. Search by area, description, and category; combine category and status filters, then reset.
+4. In Review reports, confirm the user submission fields and origin are visible, add a note, and change its status.
+5. Open incident details, inspect the status history, refresh, and confirm the status and history remain in the same browser.
+6. In Insights, compare totals with report listings and check that repeat locations/time summaries use browser-local submissions only.
+7. Repeat at mobile width and by keyboard, including opening/closing the menu and dismissing the report dialog with Escape.
 
 ## Technology
 

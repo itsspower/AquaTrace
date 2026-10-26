@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   incidents as sampleIncidents,
   loadUserIncidents,
@@ -128,6 +128,8 @@ function InsightBreakdown({ title, description, entries }: { title: string; desc
 }
 
 function App() {
+  const reportTriggerRef = useRef<HTMLButtonElement>(null)
+  const reportDialogRef = useRef<HTMLElement>(null)
   const [page, setPage] = useState<Page>('dashboard')
   const [selectedIncident, setSelectedIncident] = useState<Incident>(sampleIncidents[0])
   const [storedData, setStoredData] = useState(loadUserIncidents)
@@ -181,6 +183,13 @@ function App() {
       byMonth: [...byMonth.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(-6),
     }
   }, [allIncidents, storedData.incidents])
+
+  useEffect(() => {
+    if (!reportOpen) return
+    reportDialogRef.current?.focus()
+    const reportTrigger = reportTriggerRef.current
+    return () => reportTrigger?.focus()
+  }, [reportOpen])
 
   const filteredIncidents = useMemo(() => allIncidents.filter((incident) => {
     const searchText = `${incident.title} ${incident.area} ${incident.description} ${incident.category}`.toLowerCase()
@@ -340,9 +349,30 @@ function App() {
     setReviewFeedback((current) => ({ ...current, [incident.id]: 'Update saved in this browser. It has not been sent to a municipality.' }))
   }
 
+  function handleReportDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === 'Escape') {
+      setReportOpen(false)
+      return
+    }
+    if (event.key !== 'Tab' || !reportDialogRef.current) return
+
+    const focusable = reportDialogRef.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    )
+    const first = focusable.item(0)
+    const last = focusable.item(focusable.length - 1)
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === reportDialogRef.current)) {
+      event.preventDefault()
+      last?.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first?.focus()
+    }
+  }
+
   return (
     <div className="app-shell">
-      <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`} aria-label="Main navigation">
+      <aside id="primary-navigation" className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`} aria-label="Main navigation">
         <a className="brand" href="#dashboard" onClick={(event) => { event.preventDefault(); navigate('dashboard') }}>
           <span className="brand-mark"><Icon name="drop" size={21} /></span>
           <span><strong>AquaTrace</strong><small>Track the problem. Find the next step.</small></span>
@@ -352,6 +382,7 @@ function App() {
           {pages.map((item) => (
             <button
               className={`nav-link ${page === item.id || (page === 'details' && item.id === 'reports') ? 'nav-link-active' : ''}`}
+              aria-current={page === item.id || (page === 'details' && item.id === 'reports') ? 'page' : undefined}
               key={item.id}
               onClick={() => navigate(item.id)}
               type="button"
@@ -373,12 +404,12 @@ function App() {
 
       <div className="main-column">
         <header className="topbar">
-          <button className="mobile-menu-button icon-button" type="button" aria-label={menuOpen ? 'Close menu' : 'Open menu'} onClick={() => setMenuOpen(!menuOpen)}>
+          <button className="mobile-menu-button icon-button" type="button" aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen} aria-controls="primary-navigation" onClick={() => setMenuOpen(!menuOpen)}>
             <Icon name={menuOpen ? 'close' : 'menu'} />
           </button>
           <div className="mobile-brand"><span className="brand-mark"><Icon name="drop" size={18} /></span><strong>AquaTrace</strong></div>
           <div className="topbar-context"><span>South Africa</span><span className="context-separator">/</span><span>Community dashboard</span></div>
-          <button className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
+          <button ref={reportTriggerRef} className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
             <Icon name="plus" size={17} /><span>Report an outage</span>
           </button>
         </header>
@@ -589,7 +620,7 @@ function App() {
 
       {reportOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReportOpen(false) }}>
-          <section className="report-modal" role="dialog" aria-modal="true" aria-labelledby="report-modal-title">
+          <section ref={reportDialogRef} className="report-modal" role="dialog" aria-modal="true" aria-labelledby="report-modal-title" tabIndex={-1} onKeyDown={handleReportDialogKeyDown}>
             <div className="modal-heading"><div><span className="eyebrow">COMMUNITY REPORT</span><h2 id="report-modal-title">{reportSubmitted ? 'Thanks for your report' : 'Report a water outage'}</h2></div><button type="button" className="icon-button" aria-label="Close report form" onClick={() => setReportOpen(false)}><Icon name="close" /></button></div>
             {reportSubmitted ? (
               <div className="submission-message">
