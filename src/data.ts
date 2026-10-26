@@ -1,4 +1,6 @@
 export type Page = 'dashboard' | 'reports' | 'water-points' | 'details'
+export type IncidentCategory = 'Water outage' | 'Low water pressure' | 'Water quality concern' | 'Other'
+export type IncidentStatus = 'Unverified' | 'Investigating' | 'Monitoring' | 'Resolved'
 
 export interface IncidentUpdate {
   time: string
@@ -8,11 +10,14 @@ export interface IncidentUpdate {
 
 export interface Incident {
   id: string
+  origin: 'sample' | 'user'
+  category: IncidentCategory
   title: string
   area: string
   reported: string
+  observedAt: string
   severity: 'High' | 'Medium' | 'Low'
-  status: 'Investigating' | 'Monitoring' | 'Resolved'
+  status: IncidentStatus
   description: string
   statusDescription: string
   updates: IncidentUpdate[]
@@ -30,9 +35,12 @@ export interface WaterPoint {
 export const incidents: Incident[] = [
   {
     id: 'sample-001',
+    origin: 'sample',
+    category: 'Water outage',
     title: 'Intermittent water supply',
     area: 'Mamelodi East, Tshwane',
     reported: 'Today, 09:20',
+    observedAt: 'Sample only',
     severity: 'High',
     status: 'Investigating',
     description: 'Residents in this sample report area have described intermittent water supply since early morning. The source and extent of the issue have not been confirmed.',
@@ -44,9 +52,12 @@ export const incidents: Incident[] = [
   },
   {
     id: 'sample-002',
+    origin: 'sample',
+    category: 'Low water pressure',
     title: 'Low water pressure reported',
     area: 'Soweto, Johannesburg',
     reported: 'Today, 08:05',
+    observedAt: 'Sample only',
     severity: 'Medium',
     status: 'Monitoring',
     description: 'A sample report describes lower-than-usual water pressure in the area. This example is not an independently verified community report.',
@@ -58,9 +69,12 @@ export const incidents: Incident[] = [
   },
   {
     id: 'sample-003',
+    origin: 'sample',
+    category: 'Water outage',
     title: 'Unplanned supply interruption',
     area: 'Paarl, Drakenstein',
     reported: 'Yesterday, 16:45',
+    observedAt: 'Sample only',
     severity: 'High',
     status: 'Investigating',
     description: 'This fictional report represents an unplanned supply interruption. No current outage or affected residents are confirmed.',
@@ -72,9 +86,12 @@ export const incidents: Incident[] = [
   },
   {
     id: 'sample-004',
+    origin: 'sample',
+    category: 'Water outage',
     title: 'Supply interruption (sample resolved)',
     area: 'KwaMashu, eThekwini',
     reported: '22 Oct, 11:30',
+    observedAt: 'Sample only',
     severity: 'Low',
     status: 'Resolved',
     description: 'A fictional, resolved example included to show how completed reports appear. This does not confirm that a real interruption occurred.',
@@ -92,3 +109,55 @@ export const waterPoints: WaterPoint[] = [
   { id: 'point-003', name: 'Paarl Central Water Tanker', area: 'Paarl, Drakenstein', sourceType: 'Water tanker', availability: 'Listed', lastVerified: 'Sample only' },
   { id: 'point-004', name: 'KwaMashu Public Tap', area: 'KwaMashu, eThekwini', sourceType: 'Community tap', availability: 'Unavailable', lastVerified: 'Sample only' },
 ]
+
+const incidentStatuses: IncidentStatus[] = ['Unverified', 'Investigating', 'Monitoring', 'Resolved']
+const incidentCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
+const severities: Incident['severity'][] = ['High', 'Medium', 'Low']
+
+function isIncident(value: unknown): value is Incident {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return record.origin === 'user'
+    && typeof record.id === 'string'
+    && typeof record.title === 'string'
+    && typeof record.area === 'string'
+    && typeof record.reported === 'string'
+    && typeof record.observedAt === 'string'
+    && typeof record.description === 'string'
+    && typeof record.statusDescription === 'string'
+    && incidentCategories.includes(record.category as IncidentCategory)
+    && incidentStatuses.includes(record.status as IncidentStatus)
+    && severities.includes(record.severity as Incident['severity'])
+    && Array.isArray(record.updates)
+    && record.updates.every((update: unknown) => {
+      if (!update || typeof update !== 'object') return false
+      const item = update as Record<string, unknown>
+      return typeof item.time === 'string' && typeof item.title === 'string' && typeof item.description === 'string'
+    })
+}
+
+export function loadUserIncidents(): { incidents: Incident[]; warning: string | null } {
+  try {
+    const saved = window.localStorage.getItem('aquatrace-user-reports')
+    if (!saved) return { incidents: [], warning: null }
+
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) {
+      return { incidents: [], warning: 'Saved reports could not be read. New reports can still be added in this session.' }
+    }
+
+    const validIncidents = parsed.filter(isIncident)
+    return {
+      incidents: validIncidents,
+      warning: validIncidents.length === parsed.length
+        ? null
+        : 'Some saved reports were invalid and have been skipped.',
+    }
+  } catch {
+    return { incidents: [], warning: 'Saved reports are unavailable. New reports can still be added in this session.' }
+  }
+}
+
+export function saveUserIncidents(userIncidents: Incident[]): void {
+  window.localStorage.setItem('aquatrace-user-reports', JSON.stringify(userIncidents))
+}
