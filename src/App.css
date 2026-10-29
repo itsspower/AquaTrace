@@ -312,6 +312,104 @@
   white-space: nowrap;
 }
 
+.report-origin.report-origin-historical {
+  border-color: #dce5ef;
+  color: #435f7d;
+  background: #f0f4f8;
+}
+
+.report-origin.report-origin-fictional {
+  border-color: #eadfc4;
+  color: #6d582b;
+  background: #faf7ee;
+}
+
+.evidence-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid #dce5ef;
+  border-radius: 3px;
+  color: #435f7d;
+  background: #f0f4f8;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.severity-mark.historical-mark {
+  background: #548da2;
+}
+
+.historical-incident-row .incident-row-end {
+  gap: 8px;
+}
+
+.report-data-section {
+  margin-top: 20px;
+}
+
+.report-data-section > h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: #435764;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.report-data-section > h3 span {
+  display: inline-flex;
+  min-width: 20px;
+  justify-content: center;
+  padding: 2px 5px;
+  border-radius: 10px;
+  color: #5e707b;
+  background: #edf1f2;
+  font-size: 9px;
+}
+
+.historical-filter-note,
+.evidence-explanation {
+  color: #657680;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.historical-filter-note {
+  margin: 8px 0 0;
+}
+
+.historical-detail-layout .detail-topline {
+  justify-content: flex-start;
+}
+
+.historical-detail-layout .detail-section {
+  overflow-wrap: anywhere;
+}
+
+.source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: #376f84;
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.source-link:focus-visible {
+  outline: 2px solid #376f84;
+  outline-offset: 3px;
+}
+
+.evidence-explanation {
+  margin: 8px 0 0;
+}
+
 .report-origin {
   display: inline-flex;
   align-items: center;
@@ -1360,6 +1458,10 @@
 }
 
 .insight-summary article:last-child {
+  border-right: 0;
+}
+
+.insight-summary article:nth-child(3n) {
   border-right: 0;
 }
 

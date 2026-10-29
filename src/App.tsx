@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
-  incidents as sampleIncidents,
   loadUserIncidents,
   saveUserIncidents,
   waterPoints,
@@ -9,6 +8,11 @@ import {
   type IncidentStatus,
   type Page,
 } from './data'
+import {
+  historicalIncidents,
+  type HistoricalIncident,
+  type HistoricalIncidentCategory,
+} from './data/historicalIncidents'
 import './App.css'
 
 const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' | 'check' }[] = [
@@ -30,6 +34,33 @@ const pageTitles: Record<Page, string> = {
 
 const reportStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'Confirmed', 'Resolved', 'Rejected']
 const reportCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
+const historicalCategoryLabels: Record<HistoricalIncidentCategory, string> = {
+  pipe_burst: 'Pipe burst',
+  planned_maintenance: 'Planned maintenance',
+  bulk_supply_interruption: 'Bulk-supply interruption',
+  supply_restriction: 'Supply restriction',
+  low_reservoir_levels: 'Low reservoir levels',
+  contamination_concern: 'Contamination concern',
+  unknown: 'Unknown',
+}
+
+function isHistoricalIncident(incident: Incident | HistoricalIncident): incident is HistoricalIncident {
+  return 'sourceUrl' in incident
+}
+
+function historicalDateRange(incident: HistoricalIncident): string {
+  if (incident.incidentDateRange) {
+    const { start, end } = incident.incidentDateRange
+    return start === end ? start : `${start} to ${end}`
+  }
+  return incident.incidentDate ?? 'Not specified by source'
+}
+
+function evidenceLabel(incident: HistoricalIncident): string {
+  if (incident.evidenceClassification === 'official_statement') return 'Official statement'
+  if (incident.evidenceClassification === 'news_report') return 'News report'
+  return 'Unverified claim'
+}
 
 function Icon({
   name,
@@ -74,8 +105,8 @@ function StatusBadge({ status }: { status: Incident['status'] }) {
   return <span className={`status-badge status-${status.toLowerCase().replaceAll(' ', '-')}`}>{status}</span>
 }
 
-function ReportOriginLabel({ origin }: { origin: Incident['origin'] }) {
-  return <span className={`report-origin report-origin-${origin}`}>{origin === 'sample' ? 'Sample · fictional' : 'User-submitted'}</span>
+function ReportOriginLabel() {
+  return <span className="report-origin report-origin-user">Community report</span>
 }
 
 function IncidentRow({
@@ -90,7 +121,7 @@ function IncidentRow({
       <span className={`severity-mark severity-${incident.severity.toLowerCase()}`} aria-hidden="true" />
       <span className="incident-main">
         <span className="incident-title">{incident.title}</span>
-        <span className="incident-meta"><Icon name="pin" size={14} />{incident.area}<span className="meta-dot">·</span>{incident.category}<span className="meta-dot">·</span>{incident.reported}<ReportOriginLabel origin={incident.origin} /></span>
+        <span className="incident-meta"><Icon name="pin" size={14} />{incident.area}<span className="meta-dot">·</span>{incident.category}<span className="meta-dot">·</span>{incident.reported}<ReportOriginLabel /></span>
       </span>
       <span className="incident-row-end">
         <StatusBadge status={incident.status} />
@@ -104,7 +135,7 @@ interface InsightCount {
   label: string
   total: number
   user: number
-  sample: number
+  historical: number
 }
 
 function InsightBreakdown({ title, description, entries }: { title: string; description: string; entries: InsightCount[] }) {
@@ -118,7 +149,7 @@ function InsightBreakdown({ title, description, entries }: { title: string; desc
             <li className="insight-row" key={entry.label}>
               <div className="insight-row-label"><strong>{entry.label}</strong><span>{entry.total} {entry.total === 1 ? 'report' : 'reports'}</span></div>
               <div className="insight-bar" aria-hidden="true"><span style={{ width: `${(entry.total / max) * 100}%` }} /></div>
-              <div className="insight-origin-counts"><span>Browser-local: <strong>{entry.user}</strong></span><span>Fictional samples: <strong>{entry.sample}</strong></span></div>
+              <div className="insight-origin-counts"><span>Community reports: <strong>{entry.user}</strong></span><span>Historical sources: <strong>{entry.historical}</strong></span></div>
             </li>
           ))}
         </ul>
@@ -127,17 +158,37 @@ function InsightBreakdown({ title, description, entries }: { title: string; desc
   )
 }
 
+function HistoricalIncidentRow({
+  incident,
+  onSelect,
+}: {
+  incident: HistoricalIncident
+  onSelect: (incident: HistoricalIncident) => void
+}) {
+  const place = incident.affectedAreas.length ? incident.affectedAreas.join(', ') : 'Area not specified'
+  return (
+    <button className="incident-row historical-incident-row" onClick={() => onSelect(incident)} type="button">
+      <span className="severity-mark historical-mark" aria-hidden="true" />
+      <span className="incident-main">
+        <span className="incident-title">{incident.summary}</span>
+        <span className="incident-meta"><Icon name="pin" size={14} />{place}<span className="meta-dot">·</span>{historicalCategoryLabels[incident.category]}<span className="meta-dot">·</span>{historicalDateRange(incident)}<span className="report-origin report-origin-historical">Historical · sourced</span></span>
+      </span>
+      <span className="incident-row-end"><span className="evidence-badge">{evidenceLabel(incident)}</span><Icon name="chevron" size={17} /></span>
+    </button>
+  )
+}
+
 function App() {
   const reportTriggerRef = useRef<HTMLButtonElement>(null)
   const reportDialogRef = useRef<HTMLElement>(null)
   const [page, setPage] = useState<Page>('dashboard')
-  const [selectedIncident, setSelectedIncident] = useState<Incident>(sampleIncidents[0])
+  const [selectedIncident, setSelectedIncident] = useState<Incident | HistoricalIncident>(historicalIncidents[0])
   const [storedData, setStoredData] = useState(loadUserIncidents)
   const [storageNotice, setStorageNotice] = useState(storedData.warning)
   const [storageCanPersist, setStorageCanPersist] = useState(storedData.canPersist)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<IncidentStatus | 'All statuses'>('All statuses')
-  const [categoryFilter, setCategoryFilter] = useState<IncidentCategory | 'All categories'>('All categories')
+  const [categoryFilter, setCategoryFilter] = useState<string>('All categories')
   const [pointFilter, setPointFilter] = useState('All sources')
   const [menuOpen, setMenuOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
@@ -147,19 +198,34 @@ function App() {
   const [observedAtDefault, setObservedAtDefault] = useState('')
   const [reviewFeedback, setReviewFeedback] = useState<Record<string, string>>({})
 
-  const allIncidents = useMemo(() => [...storedData.incidents, ...sampleIncidents], [storedData.incidents])
+  const allIncidents = storedData.incidents
+  const allRecordCount = allIncidents.length + historicalIncidents.length
   const insights = useMemo(() => {
-    const summarize = (selector: (incident: Incident) => string) => {
-      const summary = new Map<string, { label: string; total: number; user: number; sample: number }>()
-      for (const incident of allIncidents) {
-        const key = selector(incident).trim().toLocaleLowerCase()
-        const counts = summary.get(key) ?? { label: selector(incident).trim(), total: 0, user: 0, sample: 0 }
+    const summarize = (entries: { label: string; origin: 'user' | 'historical' }[]) => {
+      const summary = new Map<string, InsightCount>()
+      for (const entry of entries) {
+        const key = entry.label.trim().toLocaleLowerCase()
+        const counts = summary.get(key) ?? { label: entry.label.trim(), total: 0, user: 0, historical: 0 }
         counts.total += 1
-        counts[incident.origin] += 1
+        counts[entry.origin] += 1
         summary.set(key, counts)
       }
       return [...summary.values()].sort((left, right) => right.total - left.total || left.label.localeCompare(right.label))
     }
+
+    const locations = [
+      ...allIncidents.map((incident) => ({ label: incident.area, origin: 'user' as const })),
+      ...historicalIncidents.map((incident) => ({
+        label: incident.affectedAreas.length === 1
+          ? incident.affectedAreas[0]
+          : `Multiple affected areas (${incident.city ?? incident.municipality ?? 'location not specified'})`,
+        origin: 'historical' as const,
+      })),
+    ]
+    const categories = [
+      ...allIncidents.map((incident) => ({ label: incident.category, origin: 'user' as const })),
+      ...historicalIncidents.map((incident) => ({ label: historicalCategoryLabels[incident.category], origin: 'historical' as const })),
+    ]
     const byMonth = new Map<string, number>()
     for (const incident of storedData.incidents) {
       const month = incident.observedAt.slice(0, 7)
@@ -168,19 +234,22 @@ function App() {
     const userLocationMap = new Map<string, InsightCount>()
     for (const incident of storedData.incidents) {
       const key = incident.area.trim().toLocaleLowerCase()
-      const counts = userLocationMap.get(key) ?? { label: incident.area.trim(), total: 0, user: 0, sample: 0 }
+      const counts = userLocationMap.get(key) ?? { label: incident.area.trim(), total: 0, user: 0, historical: 0 }
       counts.total += 1
       counts.user += 1
       userLocationMap.set(key, counts)
     }
     return {
-      byArea: summarize((incident) => incident.area),
-      byCategory: summarize((incident) => incident.category),
-      byStatus: summarize((incident) => incident.status),
+      byArea: summarize(locations),
+      byCategory: summarize(categories),
+      byStatus: summarize(allIncidents.map((incident) => ({ label: incident.status, origin: 'user' as const }))),
       repeatedUserLocations: [...userLocationMap.values()]
         .filter((entry) => entry.user > 1)
         .sort((left, right) => right.user - left.user || left.label.localeCompare(right.label)),
       byMonth: [...byMonth.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(-6),
+      reviewedCommunityReports: allIncidents.filter((incident) => incident.status !== 'Unverified').length,
+      unverifiedCommunityReports: allIncidents.filter((incident) => incident.status === 'Unverified').length,
+      unverifiedHistoricalClaims: historicalIncidents.filter((incident) => incident.evidenceClassification === 'unverified_claim').length,
     }
   }, [allIncidents, storedData.incidents])
 
@@ -198,6 +267,12 @@ function App() {
       && (categoryFilter === 'All categories' || incident.category === categoryFilter)
   }), [allIncidents, query, statusFilter, categoryFilter])
 
+  const filteredHistoricalIncidents = useMemo(() => historicalIncidents.filter((incident) => {
+    const searchText = `${incident.summary} ${incident.sourceTitle} ${incident.municipality ?? ''} ${incident.city ?? ''} ${incident.affectedAreas.join(' ')} ${historicalCategoryLabels[incident.category]}`.toLowerCase()
+    return searchText.includes(query.toLowerCase())
+      && (categoryFilter === 'All categories' || historicalCategoryLabels[incident.category] === categoryFilter)
+  }), [query, categoryFilter])
+
   const filteredPoints = useMemo(() => waterPoints.filter((point) => {
     const searchText = `${point.name} ${point.area} ${point.sourceType}`.toLowerCase()
     return searchText.includes(query.toLowerCase()) && (pointFilter === 'All sources' || point.sourceType === pointFilter)
@@ -212,6 +287,12 @@ function App() {
   }
 
   function selectIncident(incident: Incident) {
+    setSelectedIncident(incident)
+    setPage('details')
+    setMenuOpen(false)
+  }
+
+  function selectHistoricalIncident(incident: HistoricalIncident) {
     setSelectedIncident(incident)
     setPage('details')
     setMenuOpen(false)
@@ -248,7 +329,7 @@ function App() {
     let id = ''
     do {
       id = `user-${now.getTime()}-${Math.random().toString(36).slice(2, 9)}`
-    } while (allIncidents.some((incident) => incident.id === id))
+    } while (allIncidents.some((incident) => incident.id === id) || historicalIncidents.some((incident) => incident.id === id))
     const newIncident: Incident = {
       id,
       origin: 'user',
@@ -292,10 +373,6 @@ function App() {
     const nextStatus = String(formData.get('status') ?? '') as IncidentStatus
     const note = String(formData.get('note') ?? '').trim()
 
-    if (incident.origin !== 'user') {
-      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Fictional sample reports are read-only.' }))
-      return
-    }
     if (!storageCanPersist) {
       setReviewFeedback((current) => ({ ...current, [incident.id]: 'Saved reports are unavailable or malformed. No change was made to avoid overwriting stored data.' }))
       return
@@ -389,7 +466,7 @@ function App() {
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
-              {item.id === 'reports' && <span className="nav-count">{allIncidents.length}</span>}
+              {item.id === 'reports' && <span className="nav-count">{allRecordCount}</span>}
             </button>
           ))}
         </nav>
@@ -429,24 +506,24 @@ function App() {
             <>
               <div className="notice-banner">
                 <span className="notice-icon"><Icon name="alert" size={17} /></span>
-                <p><strong>Sample reports and water points are fictional.</strong> User-submitted report statuses are local prototype records, not official verification.</p>
-                <ReportOriginLabel origin="sample" />
+                <p><strong>Historical source reports are not live service information.</strong> Community reports and review statuses are browser-local and unverified unless independently supported.</p>
+                <span className="report-origin report-origin-historical">Historical · sourced</span>
               </div>
 
               <section className="metric-grid" aria-label="Community overview metrics">
-                <article className="metric-card"><span className="metric-label">Total reports</span><strong>{allIncidents.length}</strong><span className="metric-note"><span className="metric-bullet blue" />Sample and user-submitted</span><span className="metric-icon"><Icon name="alert" size={19} /></span></article>
-                <article className="metric-card"><span className="metric-label">Open reports</span><strong>{allIncidents.filter((item) => item.status !== 'Resolved' && item.status !== 'Rejected').length}</strong><span className="metric-note"><span className="metric-bullet amber" />Includes unverified reports</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
-                <article className="metric-card"><span className="metric-label">Water points listed</span><strong>{waterPoints.length}</strong><span className="metric-note"><span className="metric-bullet green" />All require verification</span><span className="metric-icon"><Icon name="drop" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">Historical sourced incidents</span><strong>{historicalIncidents.length}</strong><span className="metric-note"><span className="metric-bullet blue" />Time-bound source records</span><span className="metric-icon"><Icon name="alert" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">Community reports</span><strong>{allIncidents.length}</strong><span className="metric-note"><span className="metric-bullet amber" />Browser-local; unverified by default</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">Fictional water points</span><strong>{waterPoints.length}</strong><span className="metric-note"><span className="metric-bullet green" />Availability is not verified</span><span className="metric-icon"><Icon name="drop" size={19} /></span></article>
               </section>
 
               <div className="dashboard-grid">
                 <section className="panel recent-panel">
-                  <div className="panel-heading"><div><h2>Recent reports</h2><p>Sample and user-submitted reports</p></div><button className="text-button" type="button" onClick={() => navigate('reports')}>View all <Icon name="arrow" size={15} /></button></div>
-                  <div className="incident-list">{allIncidents.slice(0, 3).map((incident) => <IncidentRow key={incident.id} incident={incident} onSelect={selectIncident} />)}</div>
-                  <div className="panel-footer"><ReportOriginLabel origin="sample" /><ReportOriginLabel origin="user" /></div>
+                  <div className="panel-heading"><div><h2>Historical source reports</h2><p>Published dates and evidence are shown in each record</p></div><button className="text-button" type="button" onClick={() => navigate('reports')}>View all <Icon name="arrow" size={15} /></button></div>
+                  <div className="incident-list">{historicalIncidents.slice(0, 3).map((incident) => <HistoricalIncidentRow key={incident.id} incident={incident} onSelect={selectHistoricalIncident} />)}</div>
+                  <div className="panel-footer"><span className="report-origin report-origin-historical">Historical · sourced</span></div>
                 </section>
                 <section className="panel status-panel">
-                  <div className="panel-heading"><div><h2>Report status</h2><p>Current report dataset</p></div><span className="panel-icon"><Icon name="grid" size={17} /></span></div>
+                  <div className="panel-heading"><div><h2>Community report workflow</h2><p>Local labels, not live outage status</p></div><span className="panel-icon"><Icon name="grid" size={17} /></span></div>
                   <div className="status-breakdown">
                     {reportStatuses.map((status) => {
                       const count = allIncidents.filter((incident) => incident.status === status).length
@@ -454,23 +531,31 @@ function App() {
                       return <div className="status-line" key={status}><span className={`status-dot dot-${statusClass}`} /><span>{status}</span><span className="status-line-track"><span className={`status-line-fill fill-${statusClass}`} style={{ width: `${allIncidents.length ? (count / allIncidents.length) * 100 : 0}%` }} /></span><strong>{count}</strong></div>
                     })}
                   </div>
-                  <div className="status-disclaimer"><Icon name="check" size={15} /><span>User submissions start unverified</span></div>
+                  <div className="status-disclaimer"><Icon name="check" size={15} /><span>New community submissions start unverified</span></div>
                 </section>
               </div>
-              <section className="next-step-banner"><div className="next-step-icon"><Icon name="drop" size={20} /></div><div><h2>Looking for another water source?</h2><p>Browse the sample directory of alternative water points.</p></div><button className="button button-secondary" type="button" onClick={() => navigate('water-points')}>Explore water points <Icon name="arrow" size={16} /></button></section>
+              <section className="next-step-banner"><div className="next-step-icon"><Icon name="drop" size={20} /></div><div><h2>Looking for another water source?</h2><p>Browse the fictional directory; listed availability is not verified.</p></div><button className="button button-secondary" type="button" onClick={() => navigate('water-points')}>Explore water points <Icon name="arrow" size={16} /></button></section>
             </>
           )}
 
           {page === 'reports' && (
             <section className="panel listing-panel">
-              <div className="listing-heading"><div><h2>All outage reports</h2><p>Showing {filteredIncidents.length} of {allIncidents.length} reports</p></div><ReportOriginLabel origin="sample" /></div>
+              <div className="listing-heading"><div><h2>Historical incidents and community reports</h2><p>{filteredHistoricalIncidents.length} historical sourced · {filteredIncidents.length} community reports shown</p></div><span className="report-origin report-origin-historical">Historical records are not live</span></div>
               <div className="filters-row">
-                <label className="search-field"><Icon name="search" size={18} /><span className="sr-only">Search reports by area or keyword</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search area or keyword" /></label>
-                <label className="filter-label"><span className="sr-only">Filter reports by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as IncidentStatus | 'All statuses')}><option>All statuses</option>{reportStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
-                <label className="filter-label"><span className="sr-only">Filter reports by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as IncidentCategory | 'All categories')}><option>All categories</option>{reportCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+                <label className="search-field"><Icon name="search" size={18} /><span className="sr-only">Search historical and community reports by area or keyword</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search area or keyword" /></label>
+                <label className="filter-label"><span className="sr-only">Filter community reports by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as IncidentStatus | 'All statuses')}><option value="All statuses">All community statuses</option>{reportStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+                <label className="filter-label"><span className="sr-only">Filter reports by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{[...reportCategories, ...new Set(Object.values(historicalCategoryLabels))].map((category) => <option key={category}>{category}</option>)}</select></label>
                 {(query || statusFilter !== 'All statuses' || categoryFilter !== 'All categories') && <button className="clear-filters-button" type="button" onClick={() => { setQuery(''); setStatusFilter('All statuses'); setCategoryFilter('All categories') }}>Reset filters</button>}
               </div>
-              {filteredIncidents.length ? <div className="incident-list listing-rows">{filteredIncidents.map((incident) => <IncidentRow key={incident.id} incident={incident} onSelect={selectIncident} />)}</div> : <div className="empty-state"><Icon name="search" size={22} /><strong>{allIncidents.length ? 'No reports match these filters' : 'No reports yet'}</strong><span>Try another search or reset your filters.</span></div>}
+              <div className="report-data-section">
+                <h3>Historical sourced incidents <span>{filteredHistoricalIncidents.length}</span></h3>
+                {filteredHistoricalIncidents.length ? <div className="incident-list listing-rows">{filteredHistoricalIncidents.map((incident) => <HistoricalIncidentRow key={incident.id} incident={incident} onSelect={selectHistoricalIncident} />)}</div> : <p className="insight-empty">No historical source records match the search or category.</p>}
+                <p className="historical-filter-note">The status filter applies only to community reports; historical records show what their sources reported at publication.</p>
+              </div>
+              <div className="report-data-section">
+                <h3>Community-submitted reports <span>{filteredIncidents.length}</span></h3>
+                {filteredIncidents.length ? <div className="incident-list listing-rows">{filteredIncidents.map((incident) => <IncidentRow key={incident.id} incident={incident} onSelect={selectIncident} />)}</div> : <div className="empty-state"><Icon name="search" size={22} /><strong>{allIncidents.length ? 'No community reports match these filters' : 'No community reports yet'}</strong><span>Try another search or reset your filters.</span></div>}
+              </div>
             </section>
           )}
 
@@ -478,25 +563,28 @@ function App() {
             <section className="insights-view">
               <div className="insights-context">
                 <div className="insight-summary">
-                  <article><span>All displayed reports</span><strong>{allIncidents.length}</strong></article>
-                  <article><span>Browser-local submissions</span><strong>{storedData.incidents.length}</strong></article>
-                  <article><span>Fictional sample reports</span><strong>{allIncidents.filter((incident) => incident.origin === 'sample').length}</strong></article>
+                  <article><span>Records shown (unique IDs)</span><strong>{allRecordCount}</strong></article>
+                  <article><span>Historical sourced incidents</span><strong>{historicalIncidents.length}</strong></article>
+                  <article><span>Community reports</span><strong>{storedData.incidents.length}</strong></article>
+                  <article><span>Reviewed community reports</span><strong>{insights.reviewedCommunityReports}</strong></article>
+                  <article><span>Unverified community reports</span><strong>{insights.unverifiedCommunityReports}</strong></article>
+                  <article><span>Historical unverified claims</span><strong>{insights.unverifiedHistoricalClaims}</strong></article>
                 </div>
-                <p>Counts combine the current browser's saved reports with the clearly marked fictional examples. Sample records are excluded from user-submitted time and repeat-location analysis.</p>
+                <p>Historical records and community reports remain separate and each unique ID is counted once. Historical status is as described by its source at publication; community review labels do not establish current service availability.</p>
               </div>
 
               <div className="insights-grid">
-                <InsightBreakdown title="Reports by location" description="Area names as entered; different spellings may be counted separately." entries={insights.byArea} />
-                <InsightBreakdown title="Reports by category" description="Counts from sample and browser-local submissions." entries={insights.byCategory} />
-                <InsightBreakdown title="Reports by status" description="Current statuses; resolved and rejected remain distinct." entries={insights.byStatus} />
+                <InsightBreakdown title="Records by location" description="Each historical record is counted once; multi-area notices use one combined location group. Differently spelled community areas may remain separate." entries={insights.byArea} />
+                <InsightBreakdown title="Records by category" description="Each historical incident is counted once, alongside community reports." entries={insights.byCategory} />
+                <InsightBreakdown title="Community reports by review status" description="Local workflow statuses only; historical records do not receive community-review statuses." entries={insights.byStatus} />
               </div>
 
               <section className="panel pattern-panel">
-                <div className="panel-heading"><div><h2>Possible repeat locations</h2><p>Based only on user-submitted reports stored in this browser</p></div><ReportOriginLabel origin="user" /></div>
+                <div className="panel-heading"><div><h2>Possible repeat locations</h2><p>Repeated community reports in this browser only</p></div><ReportOriginLabel /></div>
                 {insights.repeatedUserLocations.length ? (
                   <>
                     <ul className="repeat-location-list">{insights.repeatedUserLocations.map((location) => <li key={location.label}><strong>{location.label}</strong><span>{location.user} reports</span></li>)}</ul>
-                    <p className="caution-copy">Multiple reports in one named area may be duplicates or separate observations. This is a possible reporting pattern, not evidence of recurring infrastructure failure.</p>
+                    <p className="caution-copy">This shows repeated reports, not proof of a common infrastructure cause. Reports may be duplicates or separate observations; media coverage is incomplete, and reporting frequency does not necessarily equal actual outage frequency.</p>
                   </>
                 ) : (
                   <div className="insight-empty"><strong>Not enough matching reports to identify a repeat location.</strong><span>At least two browser-local reports with the same entered area are needed for this comparison.</span></div>
@@ -507,14 +595,14 @@ function App() {
                 <div className="panel-heading"><div><h2>Reports over time</h2><p>Latest six months with reports · browser-local submissions only</p></div><Icon name="clock" size={18} /></div>
                 {insights.byMonth.length ? (
                   <ul className="time-insight-list">{insights.byMonth.map(([month, count]) => <li key={month}><span>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T00:00:00Z`))}</span><span className="time-insight-bar" aria-hidden="true"><span style={{ width: `${(count / Math.max(...insights.byMonth.map(([, value]) => value))) * 100}%` }} /></span><strong>{count}</strong></li>)}</ul>
-                ) : <p className="insight-empty">No user-submitted observation dates are available yet. Fictional sample dates are excluded from this summary.</p>}
+                ) : <p className="insight-empty">No community-submitted observation dates are available yet. Historical source records are excluded from this summary.</p>}
               </section>
 
               <section className="panel insight-guidance">
                 <div><span className="guidance-step">1</span><h2>Review possible duplicates</h2><p>Compare description, entered area, and observation time before treating similar reports as separate events.</p></div>
-                <div><span className="guidance-step">2</span><h2>Check evidence and status</h2><p>Look for independent observations and current, reliable service updates. A local reviewer status alone is not external confirmation.</p></div>
+                <div><span className="guidance-step">2</span><h2>Check evidence and status</h2><p>Read the linked source and its publication date. A historical article reports status at that time, and a local community-review label is not external confirmation.</p></div>
                 <div><span className="guidance-step">3</span><h2>Compare over time</h2><p>Use consistent area names and dates across a longer period before proposing that a pattern may be recurring.</p></div>
-                <p className="insight-boundary"><strong>What these insights cannot establish:</strong> root cause, outage prediction, service failure, or municipal performance. Confirming a suspected pattern would require deduplicated reports, consistent timestamps and locations, corroborating observations, and independently sourced service information.</p>
+                <p className="insight-boundary"><strong>What these insights cannot establish:</strong> live water availability, root cause, outage prediction, or municipal performance. Media coverage is incomplete, and reporting frequency does not necessarily equal actual outage frequency. Confirming a suspected pattern would require deduplicated reports, consistent timestamps and locations, corroborating observations, and independently sourced service information.</p>
               </section>
             </section>
           )}
@@ -523,7 +611,7 @@ function App() {
             <section className="review-view">
               <div className="review-disclaimer">
                 <Icon name="alert" size={17} />
-                <p><strong>Local prototype only.</strong> This reviewer workflow is not authenticated or secure, and status changes are saved only in this browser. No municipality receives reports or updates.</p>
+                <p><strong>Community reports only.</strong> This reviewer workflow is not authenticated or secure, and status changes are saved only in this browser. Historical source records are read-only and no municipality receives reports or updates.</p>
               </div>
               {!storedData.incidents.length && (
                 <div className="empty-state review-empty" role="status">
@@ -534,10 +622,10 @@ function App() {
               )}
               <div className="review-list">
                 {allIncidents.map((incident) => (
-                  <article className={`panel review-card ${incident.origin === 'sample' ? 'review-card-sample' : ''}`} key={incident.id}>
+                  <article className="panel review-card" key={incident.id}>
                     <div className="review-card-header">
                       <div>
-                        <div className="review-card-kicker">{incident.origin === 'sample' ? 'READ-ONLY SAMPLE' : 'USER SUBMISSION'} <span>·</span> {incident.id}</div>
+                        <div className="review-card-kicker">COMMUNITY SUBMISSION <span>·</span> {incident.id}</div>
                         <h2>{incident.title}</h2>
                       </div>
                       <div className="review-card-actions"><StatusBadge status={incident.status} /><button className="text-button" type="button" onClick={() => selectIncident(incident)}>View details</button></div>
@@ -546,26 +634,22 @@ function App() {
                       <div><span>Location</span><strong>{incident.area}</strong></div>
                       <div><span>Category</span><strong>{incident.category}</strong></div>
                       <div><span>Severity</span><strong>{incident.severity}</strong></div>
-                      <div><span>Observed</span><strong>{incident.origin === 'sample' ? incident.observedAt : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.observedAt))}</strong></div>
+                      <div><span>Observed</span><strong>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.observedAt))}</strong></div>
                       <div className="review-field-description"><span>Description</span><p>{incident.description}</p></div>
-                      <div><span>Submission origin</span><ReportOriginLabel origin={incident.origin} /></div>
+                      <div><span>Submission origin</span><ReportOriginLabel /></div>
                     </div>
-                    {incident.origin === 'sample' ? (
-                      <p className="sample-readonly-note">Fictional demonstration report. Its status and history cannot be changed.</p>
-                    ) : (
-                      <form className="review-form" onSubmit={(event) => updateIncidentStatus(event, incident)}>
-                        <label className="review-status-field" htmlFor={`review-status-${incident.id}`}>Update status
-                          <select id={`review-status-${incident.id}`} name="status" defaultValue={incident.status}>
-                            {reportStatuses.map((status) => <option key={status}>{status}</option>)}
-                          </select>
-                        </label>
-                        <label className="review-note-field" htmlFor={`review-note-${incident.id}`}>Optional note
-                          <input id={`review-note-${incident.id}`} name="note" maxLength={240} placeholder="Short reason or context" />
-                        </label>
-                        <button className="button button-primary" type="submit">Save update</button>
-                        {reviewFeedback[incident.id] && <p className={`review-feedback ${reviewFeedback[incident.id].startsWith('Update saved') ? 'review-feedback-success' : ''}`} role="status">{reviewFeedback[incident.id]}</p>}
-                      </form>
-                    )}
+                    <form className="review-form" onSubmit={(event) => updateIncidentStatus(event, incident)}>
+                      <label className="review-status-field" htmlFor={`review-status-${incident.id}`}>Update status
+                        <select id={`review-status-${incident.id}`} name="status" defaultValue={incident.status}>
+                          {reportStatuses.map((status) => <option key={status}>{status}</option>)}
+                        </select>
+                      </label>
+                      <label className="review-note-field" htmlFor={`review-note-${incident.id}`}>Optional note
+                        <input id={`review-note-${incident.id}`} name="note" maxLength={240} placeholder="Short reason or context" />
+                      </label>
+                      <button className="button button-primary" type="submit">Save update</button>
+                      {reviewFeedback[incident.id] && <p className={`review-feedback ${reviewFeedback[incident.id].startsWith('Update saved') ? 'review-feedback-success' : ''}`} role="status">{reviewFeedback[incident.id]}</p>}
+                    </form>
                   </article>
                 ))}
               </div>
@@ -574,30 +658,63 @@ function App() {
 
           {page === 'water-points' && (
             <section className="panel listing-panel">
-              <div className="listing-heading"><div><h2>Alternative water points</h2><p>Sample directory · availability must be confirmed locally</p></div><ReportOriginLabel origin="sample" /></div>
+              <div className="listing-heading"><div><h2>Alternative water points</h2><p>Fictional demonstration directory · availability is not verified</p></div><span className="report-origin report-origin-fictional">Fictional examples</span></div>
               <div className="filters-row">
                 <label className="search-field"><Icon name="search" size={18} /><span className="sr-only">Search water points by name or area</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name or area" /></label>
                 <label className="filter-label"><span className="sr-only">Filter by source type</span><select value={pointFilter} onChange={(event) => setPointFilter(event.target.value)}><option>All sources</option><option>Community tap</option><option>Borehole</option><option>Water tanker</option></select></label>
               </div>
-              {filteredPoints.length ? <div className="water-point-grid">{filteredPoints.map((point) => <article className="water-point-card" key={point.id}><div className="point-card-top"><span className="point-icon"><Icon name="drop" size={19} /></span><span className="availability"><span className={`availability-dot availability-${point.availability.toLowerCase()}`} />{point.availability}</span></div><h3>{point.name}</h3><p className="point-area"><Icon name="pin" size={14} />{point.area}</p><div className="point-details"><span>{point.sourceType}</span><span>Last verified: {point.lastVerified}</span></div><div className="point-trust"><ReportOriginLabel origin="sample" /></div></article>)}</div> : <div className="empty-state"><Icon name="search" size={22} /><strong>No water points match your search</strong><span>Try another area or source type.</span></div>}
+              {filteredPoints.length ? <div className="water-point-grid">{filteredPoints.map((point) => <article className="water-point-card" key={point.id}><div className="point-card-top"><span className="point-icon"><Icon name="drop" size={19} /></span><span className="availability"><span className={`availability-dot availability-${point.availability.toLowerCase()}`} />{point.availability}</span></div><h3>{point.name}</h3><p className="point-area"><Icon name="pin" size={14} />{point.area}</p><div className="point-details"><span>{point.sourceType}</span><span>Last verified: {point.lastVerified}</span></div><div className="point-trust"><span className="report-origin report-origin-fictional">Fictional example · not verified</span></div></article>)}</div> : <div className="empty-state"><Icon name="search" size={22} /><strong>No water points match your search</strong><span>Try another area or source type.</span></div>}
             </section>
           )}
 
-          {page === 'details' && (
+          {page === 'details' && isHistoricalIncident(selectedIncident) && (
+            <div className="detail-layout historical-detail-layout">
+              <section className="panel detail-panel">
+                <div className="detail-topline">
+                  <span className="report-origin report-origin-historical">Historical · not live</span>
+                  <span className="evidence-badge">{evidenceLabel(selectedIncident)}</span>
+                </div>
+                <h2 className="detail-title">{historicalCategoryLabels[selectedIncident.category]}</h2>
+                <div className="detail-report-id">Record ID: <code>{selectedIncident.id}</code></div>
+                <div className="detail-meta">
+                  <span><Icon name="pin" size={16} />{[selectedIncident.city, selectedIncident.municipality].filter(Boolean).join(' · ') || 'Location not specified'}</span>
+                  <span><Icon name="clock" size={16} />Incident date: {historicalDateRange(selectedIncident)}</span>
+                  <span>Published: {selectedIncident.publicationDate}</span>
+                </div>
+                <div className="detail-section"><h3>What the source reports</h3><p>{selectedIncident.summary}</p></div>
+                <div className="detail-section"><h3>Affected areas named</h3><p>{selectedIncident.affectedAreas.join(', ') || 'Not specified by source'}</p></div>
+                {selectedIncident.reportedCause && <div className="detail-section"><h3>Cause as reported</h3><p>{selectedIncident.reportedCause}</p></div>}
+                {selectedIncident.reportedStatusAtPublication && <div className="detail-section"><h3>Status at publication</h3><p>{selectedIncident.reportedStatusAtPublication}</p></div>}
+                <div className="detail-section"><h3>Source and evidence</h3><p>{selectedIncident.sourcePublisher}: {selectedIncident.sourceTitle}</p><a className="source-link" href={selectedIncident.sourceUrl} target="_blank" rel="noopener noreferrer">Open original source in a new tab <Icon name="arrow" size={15} /></a><p className="evidence-explanation">{selectedIncident.evidenceClassification === 'official_statement' ? 'This classification means the official source directly documents the statement. It does not mean AquaTrace independently verified the incident.' : selectedIncident.evidenceClassification === 'news_report' ? 'This classification means a traceable news organisation reported the claim; it is not independent verification by AquaTrace.' : 'The available source reports a claim that has not been independently confirmed.'}</p></div>
+                <div className="detail-section"><h3>Notes and limitations</h3><p>{selectedIncident.notes}</p></div>
+                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>This is a dated historical record. Its status is only what the source described at publication; AquaTrace does not provide live water availability.</span></div>
+              </section>
+              <section className="panel timeline-panel">
+                <div className="panel-heading"><div><h2>Record provenance</h2><p>Source-backed historical entry</p></div><Icon name="clock" size={18} /></div>
+                <div className="status-history">
+                  <article className="status-history-entry"><span>Source publication</span><p>{selectedIncident.publicationDate} · {selectedIncident.sourcePublisher}</p></article>
+                  <article className="status-history-entry"><span>Added to AquaTrace</span><p>{selectedIncident.addedDate}</p></article>
+                  <article className="status-history-entry"><span>Evidence classification</span><p>{evidenceLabel(selectedIncident)}</p></article>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {page === 'details' && !isHistoricalIncident(selectedIncident) && (
             <div className="detail-layout">
               <section className="panel detail-panel">
                 <div className="detail-topline"><span className={`severity-tag severity-tag-${selectedIncident.severity.toLowerCase()}`}>{selectedIncident.severity} severity</span><StatusBadge status={selectedIncident.status} /></div>
                 <h2 className="detail-title">{selectedIncident.title}</h2>
                 <div className="detail-report-id">Report ID: <code>{selectedIncident.id}</code></div>
-                <div className="detail-meta"><span><Icon name="pin" size={16} />{selectedIncident.area}</span><span><Icon name="clock" size={16} />Reported {selectedIncident.reported}</span><span>Observed: {selectedIncident.origin === 'sample' ? selectedIncident.observedAt : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selectedIncident.observedAt))}</span></div>
-                <div className="detail-sample"><ReportOriginLabel origin={selectedIncident.origin} /><span className="detail-category">{selectedIncident.category}</span></div>
-                {selectedIncident.origin === 'user' && <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>}
+                <div className="detail-meta"><span><Icon name="pin" size={16} />{selectedIncident.area}</span><span><Icon name="clock" size={16} />Reported {selectedIncident.reported}</span><span>Observed: {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selectedIncident.observedAt))}</span></div>
+                <div className="detail-sample"><ReportOriginLabel /><span className="detail-category">{selectedIncident.category}</span></div>
+                <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>
                 <div className="detail-section"><h3>About this report</h3><p>{selectedIncident.description}</p></div>
                 <div className="detail-section"><h3>What this status means</h3><p>{selectedIncident.statusDescription}</p></div>
-                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>{selectedIncident.origin === 'sample' ? 'This fictional sample report does not describe a confirmed outage.' : 'This user-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.'}</span></div>
+                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>This community-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.</span></div>
               </section>
               <section className="panel timeline-panel">
-                <div className="panel-heading"><div><h2>Update history</h2><p>{selectedIncident.origin === 'sample' ? 'Sample report timeline' : 'Updates for this submission'}</p></div><Icon name="clock" size={18} /></div>
+                <div className="panel-heading"><div><h2>Update history</h2><p>Updates for this community submission</p></div><Icon name="clock" size={18} /></div>
                 <ol className="timeline">{selectedIncident.updates.map((update, index) => <li className="timeline-entry" key={`${update.time}-${index}`}><span className={`timeline-marker ${index === 0 ? 'timeline-marker-current' : ''}`} /><div><span className="timeline-time">{update.time}</span><strong>{update.title}</strong><p>{update.description}</p></div></li>)}</ol>
                 <div className="status-history">
                   <h3>Status change history</h3>
@@ -612,7 +729,7 @@ function App() {
               </section>
             </div>
           )}
-          <footer className="page-footer"><span>AquaTrace <span className="footer-dot">·</span> A community information concept</span><span>Sample information only — not municipal or live data.</span></footer>
+          <footer className="page-footer"><span>AquaTrace <span className="footer-dot">·</span> A community information concept</span><span>Historical source records are not live data; water-point examples are fictional.</span></footer>
         </main>
       </div>
 
