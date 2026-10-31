@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   loadUserIncidents,
   saveUserIncidents,
@@ -14,10 +14,21 @@ import {
   type HistoricalIncidentCategory,
 } from './data/historicalIncidents'
 import { useAuth } from './auth/AuthContext'
+import { fetchAdminProfiles, updateProfileRole, type AdminProfile, type ProfileRoleChange } from './data/adminRepository'
+import { createSharedIncident, fetchSharedIncidents, importLegacyIncidents, reviewSharedIncident } from './data/incidentRepository'
+import {
+  addSharedWaterPoint,
+  fetchSharedWaterPoints,
+  updateSharedWaterPoint,
+  type SharedWaterPoint,
+  type WaterPointAvailabilityStatus,
+  type WaterPointVerificationStatus,
+} from './data/waterPointRepository'
 import LoginPage from './auth/LoginPage'
 import {
   canAccessPage,
   canReviewIncidents,
+  isRole,
   roleLabels,
   type SessionUser,
 } from './auth/demoAccounts'
@@ -29,6 +40,7 @@ const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' | 'check
   { id: 'review', label: 'Review reports', icon: 'check' },
   { id: 'insights', label: 'Insights', icon: 'grid' },
   { id: 'water-points', label: 'Water points', icon: 'drop' },
+  { id: 'admin', label: 'User access', icon: 'check' },
 ]
 
 const pageTitles: Record<Page, string> = {
@@ -38,9 +50,10 @@ const pageTitles: Record<Page, string> = {
   insights: 'Outage insights',
   'water-points': 'Water points',
   details: 'Incident details',
+  admin: 'User access',
 }
 
-const reportStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'Confirmed', 'Resolved', 'Rejected']
+const reportStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'More information requested', 'Confirmed', 'Resolved', 'Rejected']
 const reportCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
 const historicalCategoryLabels: Record<HistoricalIncidentCategory, string> = {
   pipe_burst: 'Pipe burst',
@@ -188,11 +201,28 @@ function HistoricalIncidentRow({
 }
 
 function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
+  const { mode } = useAuth()
   const reportTriggerRef = useRef<HTMLButtonElement>(null)
   const reportDialogRef = useRef<HTMLElement>(null)
   const [page, setPage] = useState<Page>('dashboard')
   const [selectedIncident, setSelectedIncident] = useState<Incident | HistoricalIncident>(historicalIncidents[0])
   const [storedData, setStoredData] = useState(loadUserIncidents)
+  const [sharedIncidents, setSharedIncidents] = useState<Incident[]>([])
+  const [sharedLoading, setSharedLoading] = useState(mode === 'supabase')
+  const [sharedError, setSharedError] = useState('')
+  const [sharedWaterPoints, setSharedWaterPoints] = useState<SharedWaterPoint[]>([])
+  const [waterPointsLoading, setWaterPointsLoading] = useState(mode === 'supabase')
+  const [waterPointsError, setWaterPointsError] = useState('')
+  const [waterPointStatusFilter, setWaterPointStatusFilter] = useState('all')
+  const [waterPointFeedback, setWaterPointFeedback] = useState('')
+  const [waterPointSubmitting, setWaterPointSubmitting] = useState(false)
+  const [waterPointReviewSubmitting, setWaterPointReviewSubmitting] = useState<Record<string, boolean>>({})
+  const [adminProfiles, setAdminProfiles] = useState<AdminProfile[]>([])
+  const [adminRoleChanges, setAdminRoleChanges] = useState<ProfileRoleChange[]>([])
+  const [adminLoading, setAdminLoading] = useState(false)
+  const [adminError, setAdminError] = useState('')
+  const [adminFeedback, setAdminFeedback] = useState('')
+  const [adminSubmitting, setAdminSubmitting] = useState<Record<string, boolean>>({})
   const [storageNotice, setStorageNotice] = useState(storedData.warning)
   const [storageCanPersist, setStorageCanPersist] = useState(storedData.canPersist)
   const [query, setQuery] = useState('')
@@ -204,13 +234,102 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
   const [reportSubmitted, setReportSubmitted] = useState(false)
   const [reportFormError, setReportFormError] = useState('')
   const [reportFeedback, setReportFeedback] = useState('')
+  const [reportSubmitting, setReportSubmitting] = useState(false)
+  const [reportSubmissionKey, setReportSubmissionKey] = useState('')
   const [observedAtDefault, setObservedAtDefault] = useState('')
   const [reviewFeedback, setReviewFeedback] = useState<Record<string, string>>({})
+  const [reviewSubmitting, setReviewSubmitting] = useState<Record<string, boolean>>({})
+  const [legacyImportOpen, setLegacyImportOpen] = useState(false)
+  const [legacySelectedIds, setLegacySelectedIds] = useState<string[]>([])
+  const [legacyImportFeedback, setLegacyImportFeedback] = useState('')
+  const [legacyImporting, setLegacyImporting] = useState(false)
   const canReview = canReviewIncidents(user.role)
   const initials = user.name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
 
-  const allIncidents = storedData.incidents
+  const allIncidents = mode === 'supabase' ? sharedIncidents : storedData.incidents
   const allRecordCount = allIncidents.length + historicalIncidents.length
+
+  const refreshSharedIncidents = useCallback(async () => fetchSharedIncidents(), [])
+
+  useEffect(() => {
+    if (mode !== 'supabase') return
+    let active = true
+    const refresh = async () => {
+      try {
+        const incidents = await refreshSharedIncidents()
+        if (active) {
+          setSharedIncidents(incidents)
+          setSharedError('')
+        }
+      } catch (error) {
+        if (active) {
+          setSharedError(error instanceof Error ? error.message : 'Shared reports could not be refreshed.')
+        }
+      } finally {
+        if (active) setSharedLoading(false)
+      }
+    }
+
+    void refresh()
+    const intervalId = window.setInterval(() => { void refresh() }, 20000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [mode, refreshSharedIncidents])
+
+  const refreshSharedWaterPoints = useCallback(async () => fetchSharedWaterPoints(), [])
+
+  useEffect(() => {
+    if (mode !== 'supabase') return
+    let active = true
+    const refresh = async () => {
+      try {
+        const points = await refreshSharedWaterPoints()
+        if (active) {
+          setSharedWaterPoints(points)
+          setWaterPointsError('')
+        }
+      } catch (error) {
+        if (active) {
+          setWaterPointsError(error instanceof Error ? error.message : 'Sourced water points could not be refreshed.')
+        }
+      } finally {
+        if (active) setWaterPointsLoading(false)
+      }
+    }
+
+    void refresh()
+    const intervalId = window.setInterval(() => { void refresh() }, 30000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [mode, refreshSharedWaterPoints])
+
+  const refreshAdminData = useCallback(async () => fetchAdminProfiles(), [])
+
+  useEffect(() => {
+    if (mode !== 'supabase' || user.role !== 'admin' || page !== 'admin') return
+    let active = true
+    const refresh = async () => {
+      setAdminLoading(true)
+      try {
+        const data = await refreshAdminData()
+        if (active) {
+          setAdminProfiles(data.profiles)
+          setAdminRoleChanges(data.roleChanges)
+          setAdminError('')
+        }
+      } catch (error) {
+        if (active) setAdminError(error instanceof Error ? error.message : 'Account-role data could not be loaded.')
+      } finally {
+        if (active) setAdminLoading(false)
+      }
+    }
+    void refresh()
+    return () => { active = false }
+  }, [mode, page, refreshAdminData, user.role])
   const insights = useMemo(() => {
     const summarize = (entries: { label: string; origin: 'user' | 'historical' }[]) => {
       const summary = new Map<string, InsightCount>()
@@ -238,12 +357,12 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
       ...historicalIncidents.map((incident) => ({ label: historicalCategoryLabels[incident.category], origin: 'historical' as const })),
     ]
     const byMonth = new Map<string, number>()
-    for (const incident of storedData.incidents) {
+    for (const incident of allIncidents) {
       const month = incident.observedAt.slice(0, 7)
       byMonth.set(month, (byMonth.get(month) ?? 0) + 1)
     }
     const userLocationMap = new Map<string, InsightCount>()
-    for (const incident of storedData.incidents) {
+    for (const incident of allIncidents) {
       const key = incident.area.trim().toLocaleLowerCase()
       const counts = userLocationMap.get(key) ?? { label: incident.area.trim(), total: 0, user: 0, historical: 0 }
       counts.total += 1
@@ -262,7 +381,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
       unverifiedCommunityReports: allIncidents.filter((incident) => incident.status === 'Unverified').length,
       unverifiedHistoricalClaims: historicalIncidents.filter((incident) => incident.evidenceClassification === 'unverified_claim').length,
     }
-  }, [allIncidents, storedData.incidents])
+  }, [allIncidents])
 
   useEffect(() => {
     if (!reportOpen) return
@@ -289,6 +408,204 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
     return searchText.includes(query.toLowerCase()) && (pointFilter === 'All sources' || point.sourceType === pointFilter)
   }), [query, pointFilter])
 
+  const filteredSharedWaterPoints = useMemo(() => sharedWaterPoints.filter((point) => {
+    const searchText = `${point.name} ${point.physicalLocation} ${point.municipality} ${point.type} ${point.source}`.toLowerCase()
+    return searchText.includes(query.toLowerCase())
+      && (waterPointStatusFilter === 'all'
+        || point.verificationStatus === waterPointStatusFilter
+        || point.availabilityStatus === waterPointStatusFilter)
+  }), [sharedWaterPoints, query, waterPointStatusFilter])
+
+  async function changeAccountRole(event: FormEvent<HTMLFormElement>, profile: AdminProfile) {
+    event.preventDefault()
+    if (user.role !== 'admin' || profile.id === user.id) return
+    const formData = new FormData(event.currentTarget)
+    const nextRoleValue = String(formData.get('role') ?? '')
+    const explanation = String(formData.get('explanation') ?? '').trim()
+    if (!isRole(nextRoleValue)) {
+      setAdminFeedback('Choose a valid account role.')
+      return
+    }
+    if (!explanation) {
+      setAdminFeedback('Explain why this role change is required.')
+      return
+    }
+
+    setAdminSubmitting((current) => ({ ...current, [profile.id]: true }))
+    setAdminFeedback('')
+    try {
+      await updateProfileRole(profile.id, nextRoleValue, explanation)
+      const data = await refreshAdminData()
+      setAdminProfiles(data.profiles)
+      setAdminRoleChanges(data.roleChanges)
+      setAdminFeedback(`Updated ${profile.email} to ${roleLabels[nextRoleValue]}. The change is recorded in the role audit history.`)
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : 'The account role could not be changed.')
+    } finally {
+      setAdminSubmitting((current) => ({ ...current, [profile.id]: false }))
+    }
+  }
+
+  async function handleRefreshSharedWaterPoints() {
+    setWaterPointsLoading(true)
+    try {
+      setSharedWaterPoints(await refreshSharedWaterPoints())
+      setWaterPointsError('')
+    } catch (error) {
+      setWaterPointsError(error instanceof Error ? error.message : 'Sourced water points could not be refreshed.')
+    } finally {
+      setWaterPointsLoading(false)
+    }
+  }
+
+  async function submitWaterPoint(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canReview || waterPointSubmitting) return
+    const form = event.currentTarget
+    const formData = new FormData(form)
+    const name = String(formData.get('pointName') ?? '').trim()
+    const physicalLocation = String(formData.get('pointLocation') ?? '').trim()
+    const municipality = String(formData.get('pointMunicipality') ?? '').trim()
+    const type = String(formData.get('pointType') ?? '').trim()
+    const source = String(formData.get('pointSource') ?? '').trim()
+    const sourceUrl = String(formData.get('pointSourceUrl') ?? '').trim()
+    const explanation = String(formData.get('pointExplanation') ?? '').trim()
+    const latitudeValue = String(formData.get('pointLatitude') ?? '').trim()
+    const longitudeValue = String(formData.get('pointLongitude') ?? '').trim()
+    const latitude = latitudeValue ? Number(latitudeValue) : null
+    const longitude = longitudeValue ? Number(longitudeValue) : null
+
+    if (!name || !physicalLocation || !municipality || !type || !source || !explanation) {
+      setWaterPointFeedback('Complete all required water-point and source-review fields.')
+      return
+    }
+    if (latitudeValue && !Number.isFinite(latitude) || longitudeValue && !Number.isFinite(longitude)
+      || (latitude === null) !== (longitude === null)
+      || (latitude !== null && (latitude < -90 || latitude > 90))
+      || (longitude !== null && (longitude < -180 || longitude > 180))) {
+      setWaterPointFeedback('Coordinates must be valid latitude/longitude values provided together, or left blank.')
+      return
+    }
+    try {
+      if (new URL(sourceUrl).protocol !== 'https:') throw new Error('The original source URL must use HTTPS.')
+    } catch {
+      setWaterPointFeedback('Enter a valid HTTPS source URL that can be inspected.')
+      return
+    }
+
+    setWaterPointSubmitting(true)
+    setWaterPointFeedback('')
+    try {
+      await addSharedWaterPoint({
+        name,
+        physicalLocation,
+        municipality,
+        latitude,
+        longitude,
+        type,
+        source,
+        sourceUrl,
+        explanation,
+      })
+      setSharedWaterPoints(await refreshSharedWaterPoints())
+      setWaterPointFeedback('Water-point record saved as Unverified with Availability unknown. A separate evidence-backed review is required before verification.')
+      form.reset()
+    } catch (error) {
+      setWaterPointFeedback(error instanceof Error
+        ? error.message
+        : 'The water-point record could not be saved. Check your connection and retry.')
+    } finally {
+      setWaterPointSubmitting(false)
+    }
+  }
+
+  async function updateWaterPoint(event: FormEvent<HTMLFormElement>, point: SharedWaterPoint) {
+    event.preventDefault()
+    if (!canReview || waterPointReviewSubmitting[point.id]) return
+    const formData = new FormData(event.currentTarget)
+    const verificationStatus = String(formData.get('verificationStatus') ?? '') as WaterPointVerificationStatus
+    const availabilityStatus = String(formData.get('availabilityStatus') ?? '') as WaterPointAvailabilityStatus
+    const explanation = String(formData.get('explanation') ?? '').trim()
+    const evidenceUrl = String(formData.get('evidenceUrl') ?? '').trim()
+    const verificationStatuses: WaterPointVerificationStatus[] = ['unverified', 'under_review', 'verified', 'closed_or_removed']
+    const availabilityStatuses: WaterPointAvailabilityStatus[] = ['available', 'temporarily_unavailable', 'unknown', 'closed_or_removed']
+
+    if (!verificationStatuses.includes(verificationStatus) || !availabilityStatuses.includes(availabilityStatus)) {
+      setWaterPointFeedback('Choose valid verification and availability states.')
+      return
+    }
+    if (!explanation) {
+      setWaterPointFeedback('Explain the verification or availability decision.')
+      return
+    }
+    if (verificationStatus === 'verified' && !/^https:\/\//i.test(evidenceUrl)) {
+      setWaterPointFeedback('An HTTPS evidence URL is required to verify a location.')
+      return
+    }
+    if (evidenceUrl) {
+      try {
+        if (new URL(evidenceUrl).protocol !== 'https:') throw new Error()
+      } catch {
+        setWaterPointFeedback('Evidence URLs must use HTTPS.')
+        return
+      }
+    }
+
+    setWaterPointReviewSubmitting((current) => ({ ...current, [point.id]: true }))
+    setWaterPointFeedback('')
+    try {
+      await updateSharedWaterPoint({
+        id: point.id,
+        verificationStatus,
+        availabilityStatus,
+        explanation,
+        evidenceUrl: evidenceUrl || null,
+      })
+      setSharedWaterPoints(await refreshSharedWaterPoints())
+      setWaterPointFeedback('Verification decision saved with an audit-history entry. Location verification does not confirm current water availability.')
+    } catch (error) {
+      setWaterPointFeedback(error instanceof Error
+        ? error.message
+        : 'The verification decision could not be saved. Check your connection and retry.')
+    } finally {
+      setWaterPointReviewSubmitting((current) => ({ ...current, [point.id]: false }))
+    }
+  }
+
+  async function handleRefreshSharedData() {
+    setSharedLoading(true)
+    try {
+      setSharedIncidents(await refreshSharedIncidents())
+      setSharedError('')
+    } catch (error) {
+      setSharedError(error instanceof Error ? error.message : 'Shared reports could not be refreshed.')
+    } finally {
+      setSharedLoading(false)
+    }
+  }
+
+  async function handleLegacyImport() {
+    const selected = storedData.incidents.filter((incident) => legacySelectedIds.includes(incident.id))
+    if (!selected.length) {
+      setLegacyImportFeedback('Select at least one local report to import.')
+      return
+    }
+    setLegacyImporting(true)
+    setLegacyImportFeedback('')
+    try {
+      const importedCount = await importLegacyIncidents(selected)
+      setSharedIncidents(await refreshSharedIncidents())
+      setSharedError('')
+      setLegacyImportFeedback(`${importedCount} selected report(s) imported as unverified. Your original browser records remain unchanged.`)
+    } catch (error) {
+      setLegacyImportFeedback(error instanceof Error
+        ? `${error.message} You can retry safely; the migration uses each local report ID to prevent duplicates.`
+        : 'Import could not be completed. Your local records remain unchanged.')
+    } finally {
+      setLegacyImporting(false)
+    }
+  }
+
   function navigate(nextPage: Page) {
     if (!canAccessPage(user.role, nextPage)) {
       setPage('dashboard')
@@ -314,10 +631,12 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
     setMenuOpen(false)
   }
 
-  function submitReport(event: FormEvent<HTMLFormElement>) {
+  async function submitReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (reportSubmitting) return
     const formData = new FormData(event.currentTarget)
     const area = String(formData.get('area') ?? '').trim()
+    const municipality = String(formData.get('municipality') ?? '').trim()
     const description = String(formData.get('description') ?? '').trim()
     const category = String(formData.get('category') ?? '') as IncidentCategory
     const severity = String(formData.get('severity') ?? '') as Incident['severity']
@@ -342,6 +661,39 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
 
     const now = new Date()
     const reported = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(now)
+    if (mode === 'supabase') {
+      const submissionKey = reportSubmissionKey || crypto.randomUUID()
+      if (!reportSubmissionKey) setReportSubmissionKey(submissionKey)
+      setReportSubmitting(true)
+      setReportFormError('')
+      setReportFeedback('')
+      try {
+        const newIncident = await createSharedIncident({
+          reporterId: user.id,
+          area,
+          municipality: municipality || null,
+          category,
+          severity,
+          description,
+          observedAt: new Date(observedAt).toISOString(),
+          submissionKey,
+        })
+        setSharedIncidents((current) => [
+          newIncident,
+          ...current.filter((incident) => incident.id !== newIncident.id),
+        ])
+        setSelectedIncident(newIncident)
+        setReportSubmitted(true)
+      } catch (error) {
+        setReportFeedback(error instanceof Error
+          ? error.message
+          : 'The shared report could not be saved. Your form is still open; check your connection before retrying.')
+      } finally {
+        setReportSubmitting(false)
+      }
+      return
+    }
+
     let id = ''
     do {
       id = `user-${now.getTime()}-${Math.random().toString(36).slice(2, 9)}`
@@ -352,7 +704,10 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
       category,
       title: category,
       area,
+      municipality: municipality || null,
       reported,
+      reportedAt: now.toISOString(),
+      reporterId: user.id,
       observedAt,
       severity,
       status: 'Unverified',
@@ -383,7 +738,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
     setReportSubmitted(true)
   }
 
-  function updateIncidentStatus(event: FormEvent<HTMLFormElement>, incident: Incident) {
+  async function updateIncidentStatus(event: FormEvent<HTMLFormElement>, incident: Incident) {
     event.preventDefault()
     if (!canReview) {
       setReviewFeedback((current) => ({ ...current, [incident.id]: 'Your role cannot update incident statuses.' }))
@@ -392,6 +747,58 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
     const formData = new FormData(event.currentTarget)
     const nextStatus = String(formData.get('status') ?? '') as IncidentStatus
     const note = String(formData.get('note') ?? '').trim()
+    const verificationClassification = String(formData.get('verificationClassification') ?? 'reviewed')
+    const evidenceUrl = String(formData.get('evidenceUrl') ?? '').trim()
+
+    if (mode === 'supabase') {
+      if (!reportStatuses.includes(nextStatus)) {
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Choose a valid status before saving.' }))
+        return
+      }
+      if (nextStatus === incident.status
+        && verificationClassification === incident.verificationClassification
+        && evidenceUrl === (incident.evidenceUrl ?? '')) {
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Choose a different status or verification classification.' }))
+        return
+      }
+      if (!note) {
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Enter an explanation for this review decision.' }))
+        return
+      }
+      if (!['unverified', 'reviewed', 'corroborated', 'externally_verified'].includes(verificationClassification)) {
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Choose a valid verification classification.' }))
+        return
+      }
+      if (['corroborated', 'externally_verified'].includes(verificationClassification)
+        && !/^https:\/\//i.test(evidenceUrl)) {
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Add an HTTPS evidence URL for corroborated or externally verified reports.' }))
+        return
+      }
+
+      setReviewSubmitting((current) => ({ ...current, [incident.id]: true }))
+      try {
+        await reviewSharedIncident({
+          id: incident.id,
+          status: nextStatus,
+          verificationClassification: verificationClassification as NonNullable<Incident['verificationClassification']>,
+          explanation: note,
+          evidenceUrl: evidenceUrl || null,
+        })
+        const latestIncidents = await refreshSharedIncidents()
+        setSharedIncidents(latestIncidents)
+        const updatedIncident = latestIncidents.find((item) => item.id === incident.id)
+        if (updatedIncident && selectedIncident.id === incident.id) setSelectedIncident(updatedIncident)
+        setReviewFeedback((current) => ({ ...current, [incident.id]: 'Review saved to the shared service and added to status history.' }))
+      } catch (error) {
+        setReviewFeedback((current) => ({
+          ...current,
+          [incident.id]: error instanceof Error ? error.message : 'Could not save this review. Check your connection and retry.',
+        }))
+      } finally {
+        setReviewSubmitting((current) => ({ ...current, [incident.id]: false }))
+      }
+      return
+    }
 
     if (!storageCanPersist) {
       setReviewFeedback((current) => ({ ...current, [incident.id]: 'Saved reports are unavailable or malformed. No change was made to avoid overwriting stored data.' }))
@@ -476,7 +883,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
         </a>
         <div className="nav-section-label">WORKSPACE</div>
         <nav className="side-nav">
-          {pages.filter((item) => canAccessPage(user.role, item.id)).map((item) => (
+          {pages.filter((item) => canAccessPage(user.role, item.id) && (item.id !== 'admin' || mode === 'supabase')).map((item) => (
             <button
               className={`nav-link ${page === item.id || (page === 'details' && item.id === 'reports') ? 'nav-link-active' : ''}`}
               aria-current={page === item.id || (page === 'details' && item.id === 'reports') ? 'page' : undefined}
@@ -496,7 +903,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
               <span className="sidebar-account-avatar" aria-hidden="true">{initials}</span>
               <div className="sidebar-account-copy">
                 <strong>{user.name}</strong>
-                <span>{roleLabels[user.role]} · Demo session</span>
+                <span>{roleLabels[user.role]} · {mode === 'demo' ? 'Demo session' : 'Account session'}</span>
               </div>
             </div>
             <button className="logout-button" type="button" onClick={onLogout}>
@@ -507,7 +914,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
             <span className="community-icon"><Icon name="pin" size={17} /></span>
             <div><strong>Community first</strong><p>Local information, made clearer.</p></div>
           </div>
-          <div className="sidebar-footnote"><span className="footnote-dot" /> Demonstration view</div>
+          <div className="sidebar-footnote"><span className="footnote-dot" /> {mode === 'demo' ? 'Demonstration view' : 'Shared service'}</div>
         </div>
       </aside>
 
@@ -520,7 +927,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
           <div className="topbar-context"><span>South Africa</span><span className="context-separator">/</span><span>Community dashboard</span></div>
           <div className="topbar-actions">
             <span className={`role-pill role-pill-${user.role}`}>{roleLabels[user.role]}</span>
-            <button ref={reportTriggerRef} className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
+            <button ref={reportTriggerRef} className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setReportSubmissionKey(crypto.randomUUID()); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
               <Icon name="plus" size={17} /><span>Report an outage</span>
             </button>
           </div>
@@ -531,24 +938,38 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
             <div>
               <div className="eyebrow">AQUATRACE <span> / </span> COMMUNITY</div>
               <h1>{pageTitles[page]}</h1>
-              <p>{page === 'dashboard' ? 'A clearer view of water interruptions and nearby alternatives.' : page === 'reports' ? 'Browse reported interruptions and follow their latest status.' : page === 'review' ? 'Review local submissions and record an explicit status update.' : page === 'water-points' ? 'Explore alternative water sources in your area.' : 'Follow the timeline and details of this report.'}</p>
+                  <p>{page === 'dashboard' ? 'A clearer view of water interruptions and nearby alternatives.' : page === 'reports' ? 'Browse reported interruptions and follow their latest status.' : page === 'review' ? 'Review community submissions and record an explicit status update.' : page === 'water-points' ? 'Explore source-attributed water-point information.' : page === 'admin' ? 'Manage account roles and inspect role-change history.' : 'Follow the timeline and details of this report.'}</p>
             </div>
             {page === 'details' && <button className="button button-secondary back-button" type="button" onClick={() => navigate('reports')}>← All reports</button>}
           </div>
-          {storageNotice && <div className="storage-notice" role="status">{storageNotice}</div>}
+          {mode === 'supabase' && (
+            <div className={`shared-sync-notice ${sharedError ? 'shared-sync-error' : ''}`} role={sharedError ? 'alert' : 'status'}>
+              <span>{sharedError
+                ? `Shared service unavailable${navigator.onLine ? '' : ' (offline)'}. ${sharedError} Previously loaded records are still shown.`
+                : sharedLoading ? 'Loading shared community reports…' : 'Shared community reports · refreshes automatically every 20 seconds.'}</span>
+              <button type="button" onClick={() => { void handleRefreshSharedData() }} disabled={sharedLoading}>Refresh</button>
+            </div>
+          )}
+          {mode === 'demo' && storageNotice && <div className="storage-notice" role="status">{storageNotice}</div>}
+          {mode === 'supabase' && storedData.incidents.length > 0 && (
+            <div className="legacy-import-notice">
+              <p><strong>{storedData.incidents.length} local report(s) remain on this browser.</strong> They are never uploaded automatically. Review and select reports to import; imported copies start Unverified, retain the original displayed submission date as a note, and the original local records stay intact.</p>
+              <button type="button" className="button button-secondary" onClick={() => { setLegacyImportOpen(true); setLegacyImportFeedback(''); setLegacySelectedIds([]) }}>Review local reports</button>
+            </div>
+          )}
 
           {page === 'dashboard' && (
             <>
               <div className="notice-banner">
                 <span className="notice-icon"><Icon name="alert" size={17} /></span>
-                <p><strong>Historical source reports are not live service information.</strong> Community reports and review statuses are browser-local and unverified unless independently supported.</p>
+                <p><strong>Historical source reports are not live service information.</strong> {mode === 'supabase' ? 'Community reports are shared; their review status is not proof of current service availability.' : 'Community reports and review statuses are browser-local and unverified unless independently supported.'}</p>
                 <span className="report-origin report-origin-historical">Historical · sourced</span>
               </div>
 
               <section className="metric-grid" aria-label="Community overview metrics">
                 <article className="metric-card"><span className="metric-label">Historical sourced incidents</span><strong>{historicalIncidents.length}</strong><span className="metric-note"><span className="metric-bullet blue" />Time-bound source records</span><span className="metric-icon"><Icon name="alert" size={19} /></span></article>
-                <article className="metric-card"><span className="metric-label">Community reports</span><strong>{allIncidents.length}</strong><span className="metric-note"><span className="metric-bullet amber" />Browser-local; unverified by default</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
-                <article className="metric-card"><span className="metric-label">Fictional water points</span><strong>{waterPoints.length}</strong><span className="metric-note"><span className="metric-bullet green" />Availability is not verified</span><span className="metric-icon"><Icon name="drop" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">{mode === 'supabase' ? 'Shared community reports' : 'Community reports'}</span><strong>{allIncidents.length}</strong><span className="metric-note"><span className="metric-bullet amber" />{mode === 'supabase' ? 'Shared; unverified by default' : 'Browser-local; unverified by default'}</span><span className="metric-icon"><Icon name="pin" size={19} /></span></article>
+                <article className="metric-card"><span className="metric-label">{mode === 'supabase' ? 'Sourced water points' : 'Fictional water points'}</span><strong>{mode === 'supabase' ? waterPointsLoading ? '…' : sharedWaterPoints.length : waterPoints.length}</strong><span className="metric-note"><span className="metric-bullet green" />{mode === 'supabase' ? 'Location and availability tracked separately' : 'Availability is not verified'}</span><span className="metric-icon"><Icon name="drop" size={19} /></span></article>
               </section>
 
               <div className="dashboard-grid">
@@ -569,7 +990,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                   <div className="status-disclaimer"><Icon name="check" size={15} /><span>New community submissions start unverified</span></div>
                 </section>
               </div>
-              <section className="next-step-banner"><div className="next-step-icon"><Icon name="drop" size={20} /></div><div><h2>Looking for another water source?</h2><p>Browse the fictional directory; listed availability is not verified.</p></div><button className="button button-secondary" type="button" onClick={() => navigate('water-points')}>Explore water points <Icon name="arrow" size={16} /></button></section>
+              <section className="next-step-banner"><div className="next-step-icon"><Icon name="drop" size={20} /></div><div><h2>Looking for another water source?</h2><p>{mode === 'supabase' ? 'Browse source-attributed locations; verification and availability are tracked separately.' : 'Browse the fictional directory; listed availability is not verified.'}</p></div><button className="button button-secondary" type="button" onClick={() => navigate('water-points')}>Explore water points <Icon name="arrow" size={16} /></button></section>
             </>
           )}
 
@@ -600,7 +1021,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                 <div className="insight-summary">
                   <article><span>Records shown (unique IDs)</span><strong>{allRecordCount}</strong></article>
                   <article><span>Historical sourced incidents</span><strong>{historicalIncidents.length}</strong></article>
-                  <article><span>Community reports</span><strong>{storedData.incidents.length}</strong></article>
+                  <article><span>Community reports</span><strong>{allIncidents.length}</strong></article>
                   <article><span>Reviewed community reports</span><strong>{insights.reviewedCommunityReports}</strong></article>
                   <article><span>Unverified community reports</span><strong>{insights.unverifiedCommunityReports}</strong></article>
                   <article><span>Historical unverified claims</span><strong>{insights.unverifiedHistoricalClaims}</strong></article>
@@ -615,7 +1036,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
               </div>
 
               <section className="panel pattern-panel">
-                <div className="panel-heading"><div><h2>Possible repeat locations</h2><p>Repeated community reports in this browser only</p></div><ReportOriginLabel /></div>
+                <div className="panel-heading"><div><h2>Possible repeat locations</h2><p>{mode === 'supabase' ? 'Repeated reports in the shared dataset' : 'Repeated community reports in this browser only'}</p></div><ReportOriginLabel /></div>
                 {insights.repeatedUserLocations.length ? (
                   <>
                     <ul className="repeat-location-list">{insights.repeatedUserLocations.map((location) => <li key={location.label}><strong>{location.label}</strong><span>{location.user} reports</span></li>)}</ul>
@@ -627,7 +1048,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
               </section>
 
               <section className="panel time-insight-panel">
-                <div className="panel-heading"><div><h2>Reports over time</h2><p>Latest six months with reports · browser-local submissions only</p></div><Icon name="clock" size={18} /></div>
+                <div className="panel-heading"><div><h2>Reports over time</h2><p>Latest six months with reports · community submissions only</p></div><Icon name="clock" size={18} /></div>
                 {insights.byMonth.length ? (
                   <ul className="time-insight-list">{insights.byMonth.map(([month, count]) => <li key={month}><span>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T00:00:00Z`))}</span><span className="time-insight-bar" aria-hidden="true"><span style={{ width: `${(count / Math.max(...insights.byMonth.map(([, value]) => value))) * 100}%` }} /></span><strong>{count}</strong></li>)}</ul>
                 ) : <p className="insight-empty">No community-submitted observation dates are available yet. Historical source records are excluded from this summary.</p>}
@@ -646,12 +1067,15 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
             <section className="review-view">
               <div className="review-disclaimer">
                 <Icon name="alert" size={17} />
-                <p><strong>Community reports only.</strong> Access is limited to the Incident Reviewer and Administrator demo roles. This is demonstration authentication, not production security, and status changes are saved only in this browser. Historical source records are read-only and no municipality receives reports or updates.</p>
+                <p><strong>Community reports only.</strong> {mode === 'supabase'
+                  ? 'Reviewer and administrator access is enforced by database role checks; review decisions are recorded in shared history. This does not make a status an official municipal determination.'
+                  : 'Access is limited to the Incident Reviewer and Administrator demo roles. This is demonstration authentication, not production security, and status changes are saved only in this browser.'} Historical source records are read-only and no municipality receives reports or updates.</p>
               </div>
-              {!storedData.incidents.length && (
+              {sharedLoading && mode === 'supabase' && <p className="insight-empty" role="status">Loading reports for review…</p>}
+              {!allIncidents.length && !sharedLoading && (
                 <div className="empty-state review-empty" role="status">
                   <Icon name="check" size={22} />
-                  <strong>No user-submitted reports to review</strong>
+                  <strong>No community-submitted reports to review</strong>
                   <span>New reports will appear here with Unverified status.</span>
                 </div>
               )}
@@ -660,7 +1084,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                   <article className="panel review-card" key={incident.id}>
                     <div className="review-card-header">
                       <div>
-                        <div className="review-card-kicker">COMMUNITY SUBMISSION <span>·</span> {incident.id}</div>
+                        <div className="review-card-kicker">COMMUNITY SUBMISSION <span>·</span> {incident.publicId ?? incident.id}</div>
                         <h2>{incident.title}</h2>
                       </div>
                       <div className="review-card-actions"><StatusBadge status={incident.status} /><button className="text-button" type="button" onClick={() => selectIncident(incident)}>View details</button></div>
@@ -672,6 +1096,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                       <div><span>Observed</span><strong>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.observedAt))}</strong></div>
                       <div className="review-field-description"><span>Description</span><p>{incident.description}</p></div>
                       <div><span>Submission origin</span><ReportOriginLabel /></div>
+                      {mode === 'supabase' && <div><span>Verification classification</span><strong>{incident.verificationClassification ?? 'unverified'}</strong></div>}
                     </div>
                     <form className="review-form" onSubmit={(event) => updateIncidentStatus(event, incident)}>
                       <label className="review-status-field" htmlFor={`review-status-${incident.id}`}>Update status
@@ -679,11 +1104,22 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                           {reportStatuses.map((status) => <option key={status}>{status}</option>)}
                         </select>
                       </label>
-                      <label className="review-note-field" htmlFor={`review-note-${incident.id}`}>Optional note
-                        <input id={`review-note-${incident.id}`} name="note" maxLength={240} placeholder="Short reason or context" />
+                      {mode === 'supabase' && <label className="review-status-field" htmlFor={`review-verification-${incident.id}`}>Evidence classification
+                        <select id={`review-verification-${incident.id}`} name="verificationClassification" defaultValue={incident.verificationClassification ?? 'reviewed'}>
+                          <option value="unverified">Unverified</option>
+                          <option value="reviewed">Reviewed</option>
+                          <option value="corroborated">Corroborated by source</option>
+                          <option value="externally_verified">Externally verified</option>
+                        </select>
+                      </label>}
+                      <label className="review-note-field" htmlFor={`review-note-${incident.id}`}>{mode === 'supabase' ? 'Review explanation (required)' : 'Optional note'}
+                        <input id={`review-note-${incident.id}`} name="note" maxLength={mode === 'supabase' ? 1000 : 240} required={mode === 'supabase'} placeholder="Reason or review context" />
                       </label>
-                      <button className="button button-primary" type="submit">Save update</button>
-                      {reviewFeedback[incident.id] && <p className={`review-feedback ${reviewFeedback[incident.id].startsWith('Update saved') ? 'review-feedback-success' : ''}`} role="status">{reviewFeedback[incident.id]}</p>}
+                      {mode === 'supabase' && <label className="review-note-field" htmlFor={`review-evidence-${incident.id}`}>Evidence URL (required for corroborated classifications)
+                        <input id={`review-evidence-${incident.id}`} name="evidenceUrl" type="url" pattern="https://.*" maxLength={1000} defaultValue={incident.evidenceUrl ?? ''} placeholder="https://…" />
+                      </label>}
+                      <button className="button button-primary" type="submit" disabled={reviewSubmitting[incident.id]}>{reviewSubmitting[incident.id] ? 'Saving…' : 'Save update'}</button>
+                      {reviewFeedback[incident.id] && <p className={`review-feedback ${/^(Update saved|Review saved)/.test(reviewFeedback[incident.id]) ? 'review-feedback-success' : ''}`} role="status">{reviewFeedback[incident.id]}</p>}
                     </form>
                   </article>
                 ))}
@@ -691,7 +1127,105 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
             </section>
           )}
 
-          {page === 'water-points' && (
+          {page === 'admin' && mode === 'supabase' && user.role === 'admin' && (
+            <section className="admin-view">
+              <div className="notice-banner"><span className="notice-icon"><Icon name="alert" size={17} /></span><p><strong>Role changes affect database permissions.</strong> Assign reviewer or administrator roles only to authorised people. Changes are recorded with an explanation and cannot be changed by residents.</p></div>
+              {adminError && <p className="form-error" role="alert">{adminError}</p>}
+              {adminFeedback && <p className="shared-feedback" role="status">{adminFeedback}</p>}
+              {adminLoading && <p className="insight-empty" role="status">Loading authorised accounts and role audit history…</p>}
+              <section className="panel admin-profiles-panel">
+                <div className="panel-heading"><div><h2>Account access</h2><p>Role changes require an administrator and an explanation.</p></div></div>
+                {adminProfiles.length ? <div className="admin-profile-list">{adminProfiles.map((profile) => (
+                  <article className="admin-profile-row" key={profile.id}>
+                    <div className="admin-profile-identity"><strong>{profile.name}</strong><span>{profile.email}</span><small>Created {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(profile.createdAt))}</small></div>
+                    <form className="admin-role-form" onSubmit={(event) => { void changeAccountRole(event, profile) }}>
+                      <label className="form-label" htmlFor={`account-role-${profile.id}`}>Role<select id={`account-role-${profile.id}`} name="role" defaultValue={profile.role} disabled={profile.id === user.id || adminSubmitting[profile.id]}>{(['resident', 'reviewer', 'admin'] as const).map((role) => <option value={role} key={role}>{roleLabels[role]}</option>)}</select></label>
+                      <label className="form-label" htmlFor={`account-role-reason-${profile.id}`}>Reason<input id={`account-role-reason-${profile.id}`} name="explanation" required maxLength={500} placeholder="Why is this access needed?" disabled={profile.id === user.id || adminSubmitting[profile.id]} /></label>
+                      <button className="button button-secondary" type="submit" disabled={profile.id === user.id || adminSubmitting[profile.id]}>{adminSubmitting[profile.id] ? 'Saving…' : 'Update role'}</button>
+                      {profile.id === user.id && <span className="admin-self-note">You cannot change your own role.</span>}
+                    </form>
+                  </article>
+                ))}</div> : !adminLoading && <p className="insight-empty">No registered accounts are available.</p>}
+              </section>
+              <section className="panel admin-audit-panel">
+                <div className="panel-heading"><div><h2>Role audit history</h2><p>Database-recorded role assignments</p></div></div>
+                {adminRoleChanges.length ? <ol className="admin-audit-list">{adminRoleChanges.map((change) => {
+                  const target = adminProfiles.find((profile) => profile.id === change.profileId)
+                  return <li key={change.id}><strong>{target?.email ?? change.profileId}</strong><span>{change.previousRole ? `${roleLabels[change.previousRole]} → ` : 'Initial access: '}{roleLabels[change.newRole]} · {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(change.createdAt))}</span><p>{change.explanation}</p></li>
+                })}</ol> : !adminLoading && <p className="insight-empty">No role changes have been recorded.</p>}
+              </section>
+            </section>
+          )}
+
+          {page === 'water-points' && mode === 'supabase' && (
+            <section className="water-points-workspace">
+              {canReview && (
+                <section className="panel water-point-contribution">
+                  <div className="panel-heading"><div><h2>Add a source-backed water point</h2><p>New entries start Unverified with Availability unknown. Do not enter a point without an inspectable original source.</p></div></div>
+                  <form className="water-point-add-form" onSubmit={(event) => { void submitWaterPoint(event) }}>
+                    <label className="form-label" htmlFor="point-name">Name <span className="required-mark">Required</span><input id="point-name" name="pointName" required maxLength={160} /></label>
+                    <label className="form-label" htmlFor="point-location">Physical location <span className="required-mark">Required</span><input id="point-location" name="pointLocation" required maxLength={300} /></label>
+                    <label className="form-label" htmlFor="point-municipality">Municipality <span className="required-mark">Required</span><input id="point-municipality" name="pointMunicipality" required maxLength={120} /></label>
+                    <label className="form-label" htmlFor="point-type">Water-point type <span className="required-mark">Required</span><input id="point-type" name="pointType" required maxLength={80} placeholder="e.g. municipal standpipe" /></label>
+                    <label className="form-label" htmlFor="point-latitude">Latitude <span>Optional</span><input id="point-latitude" name="pointLatitude" type="number" min="-90" max="90" step="any" /></label>
+                    <label className="form-label" htmlFor="point-longitude">Longitude <span>Optional</span><input id="point-longitude" name="pointLongitude" type="number" min="-180" max="180" step="any" /></label>
+                    <label className="form-label" htmlFor="point-source">Source publisher <span className="required-mark">Required</span><input id="point-source" name="pointSource" required maxLength={200} /></label>
+                    <label className="form-label" htmlFor="point-source-url">Original source URL <span className="required-mark">Required</span><input id="point-source-url" name="pointSourceUrl" type="url" pattern="https://.*" required maxLength={1000} placeholder="https://…" /></label>
+                    <label className="form-label water-point-source-review" htmlFor="point-explanation">Source inspection notes <span className="required-mark">Required</span><textarea id="point-explanation" name="pointExplanation" required maxLength={1000} rows={2} placeholder="What does the source establish about this location?" /></label>
+                    <div className="water-point-add-actions">
+                      <p className="form-note">A location can be verified without claiming that water is currently available. Availability is tracked separately.</p>
+                      <button className="button button-primary" type="submit" disabled={waterPointSubmitting}>{waterPointSubmitting ? 'Saving…' : 'Save as unverified'}</button>
+                    </div>
+                  </form>
+                </section>
+              )}
+              {waterPointFeedback && <p className="shared-feedback" role="status">{waterPointFeedback}</p>}
+              <section className="panel listing-panel">
+                <div className="listing-heading">
+                  <div><h2>Sourced water-point directory</h2><p>Location verification and current availability are different claims. Availability may be unknown or stale.</p></div>
+                  <button className="button button-secondary" type="button" onClick={() => { void handleRefreshSharedWaterPoints() }} disabled={waterPointsLoading}>Refresh</button>
+                </div>
+                <div className="filters-row">
+                  <label className="search-field"><Icon name="search" size={18} /><span className="sr-only">Search water points by name, location or source</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, municipality or source" /></label>
+                  <label className="filter-label"><span className="sr-only">Filter water points by verification and availability</span><select value={waterPointStatusFilter} onChange={(event) => setWaterPointStatusFilter(event.target.value)}>
+                    <option value="all">All verification and availability states</option>
+                    <option value="unverified">Unverified</option><option value="under_review">Under review</option><option value="verified">Verified location</option><option value="available">Availability reported available</option><option value="temporarily_unavailable">Temporarily unavailable</option><option value="unknown">Availability unknown</option><option value="closed_or_removed">Closed or removed</option>
+                  </select></label>
+                </div>
+                {waterPointsError && <p className="form-error" role="alert">{waterPointsError} Previously loaded records remain visible.</p>}
+                {waterPointsLoading && <p className="insight-empty" role="status">Loading source-backed water points…</p>}
+                {!waterPointsLoading && !filteredSharedWaterPoints.length && (
+                  <div className="empty-state"><Icon name="search" size={22} /><strong>{sharedWaterPoints.length ? 'No water points match these filters' : 'No source-backed water points have been added'}</strong><span>Unverified example locations are not shown as real places. A reviewer must add an inspectable source before a record appears here.</span></div>
+                )}
+                <div className="water-point-grid">
+                  {filteredSharedWaterPoints.map((point) => (
+                    <article className="water-point-card shared-water-point-card" key={point.id}>
+                      <div className="point-card-top"><span className="point-icon"><Icon name="drop" size={19} /></span><span className={`availability availability-${point.availabilityStatus}`}>{point.availabilityStatus.replaceAll('_', ' ')}</span></div>
+                      <h3>{point.name}</h3>
+                      <p className="point-area"><Icon name="pin" size={14} />{point.physicalLocation} · {point.municipality}</p>
+                      <div className="point-details"><span>{point.type}</span><span>Location: {point.verificationStatus.replaceAll('_', ' ')}</span></div>
+                      {point.latitude !== null && point.longitude !== null && <p className="point-coordinate">Coordinates: {point.latitude}, {point.longitude}</p>}
+                      <div className="point-source"><span>Source: {point.source}</span><a className="source-link" href={point.sourceUrl} target="_blank" rel="noopener noreferrer">Open original source <Icon name="arrow" size={14} /></a></div>
+                      <div className="point-details"><span>Last location verification: {point.lastVerificationDate ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(point.lastVerificationDate)) : 'Not verified'}</span><span>Availability update: {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(point.lastAvailabilityUpdate))}</span></div>
+                      <p className="point-trust">Verified location does not mean water is currently available.</p>
+                      <details className="water-point-history"><summary>Verification and availability history ({point.history.length})</summary>
+                        {point.history.length ? <ol>{point.history.map((entry) => <li key={entry.id}><strong>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(entry.createdAt))}</strong><span>Location: {entry.previousVerificationStatus?.replaceAll('_', ' ') ?? 'new'} → {entry.newVerificationStatus.replaceAll('_', ' ')}; availability: {entry.previousAvailabilityStatus?.replaceAll('_', ' ') ?? 'new'} → {entry.newAvailabilityStatus.replaceAll('_', ' ')}</span><p>{entry.explanation}</p>{entry.evidenceUrl && <a className="source-link" href={entry.evidenceUrl} target="_blank" rel="noopener noreferrer">Review evidence <Icon name="arrow" size={14} /></a>}</li>)}</ol> : <p>No reviewer changes are recorded.</p>}
+                      </details>
+                      {canReview && <form className="water-point-review-form" onSubmit={(event) => { void updateWaterPoint(event, point) }}>
+                        <label className="form-label" htmlFor={`point-verification-${point.id}`}>Location verification status<select id={`point-verification-${point.id}`} name="verificationStatus" defaultValue={point.verificationStatus}><option value="unverified">Unverified</option><option value="under_review">Under review</option><option value="verified">Verified location</option><option value="closed_or_removed">Closed or removed</option></select></label>
+                        <label className="form-label" htmlFor={`point-availability-${point.id}`}>Availability status<select id={`point-availability-${point.id}`} name="availabilityStatus" defaultValue={point.availabilityStatus}><option value="unknown">Availability unknown</option><option value="available">Reported available</option><option value="temporarily_unavailable">Temporarily unavailable</option><option value="closed_or_removed">Closed or removed</option></select></label>
+                        <label className="form-label" htmlFor={`point-evidence-${point.id}`}>Evidence URL (required to verify)<input id={`point-evidence-${point.id}`} name="evidenceUrl" type="url" pattern="https://.*" maxLength={1000} defaultValue={point.sourceUrl} /></label>
+                        <label className="form-label" htmlFor={`point-explanation-${point.id}`}>Explanation <textarea id={`point-explanation-${point.id}`} name="explanation" required maxLength={1000} rows={2} /></label>
+                        <button className="button button-primary" type="submit" disabled={waterPointReviewSubmitting[point.id]}>{waterPointReviewSubmitting[point.id] ? 'Saving…' : 'Save review'}</button>
+                      </form>}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {page === 'water-points' && mode === 'demo' && (
             <section className="panel listing-panel">
               <div className="listing-heading"><div><h2>Alternative water points</h2><p>Fictional demonstration directory · availability is not verified</p></div><span className="report-origin report-origin-fictional">Fictional examples</span></div>
               <div className="filters-row">
@@ -740,13 +1274,17 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
               <section className="panel detail-panel">
                 <div className="detail-topline"><span className={`severity-tag severity-tag-${selectedIncident.severity.toLowerCase()}`}>{selectedIncident.severity} severity</span><StatusBadge status={selectedIncident.status} /></div>
                 <h2 className="detail-title">{selectedIncident.title}</h2>
-                <div className="detail-report-id">Report ID: <code>{selectedIncident.id}</code></div>
+                <div className="detail-report-id">Report ID: <code>{selectedIncident.publicId ?? selectedIncident.id}</code></div>
                 <div className="detail-meta"><span><Icon name="pin" size={16} />{selectedIncident.area}</span><span><Icon name="clock" size={16} />Reported {selectedIncident.reported}</span><span>Observed: {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selectedIncident.observedAt))}</span></div>
                 <div className="detail-sample"><ReportOriginLabel /><span className="detail-category">{selectedIncident.category}</span></div>
+                {selectedIncident.legacyReporterLabel && <div className="detail-section"><h3>Original local account</h3><p>{selectedIncident.legacyReporterLabel}. This legacy label is not an authenticated identity; the signed-in importer is the shared record's reporter.</p></div>}
                 {canReview && <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>}
                 <div className="detail-section"><h3>About this report</h3><p>{selectedIncident.description}</p></div>
                 <div className="detail-section"><h3>What this status means</h3><p>{selectedIncident.statusDescription}</p></div>
-                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>This community-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.</span></div>
+                {selectedIncident.evidenceUrl && <div className="detail-section"><h3>Review evidence</h3><a className="source-link" href={selectedIncident.evidenceUrl} target="_blank" rel="noopener noreferrer">Open reviewer-linked evidence in a new tab <Icon name="arrow" size={15} /></a></div>}
+                <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>{mode === 'supabase'
+                  ? 'Shared community report. Review labels and external evidence links are attributed to a reviewer; AquaTrace does not provide official municipal verification or live service status.'
+                  : 'This community-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.'}</span></div>
               </section>
               <section className="panel timeline-panel">
                 <div className="panel-heading"><div><h2>Update history</h2><p>Updates for this community submission</p></div><Icon name="clock" size={18} /></div>
@@ -758,6 +1296,7 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
                       <span>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(change.timestamp))}</span>
                       <p><StatusBadge status={change.previousStatus} /> <span aria-label="changed to">→</span> <StatusBadge status={change.newStatus} /></p>
                       {change.note && <p className="status-history-note">{change.note}</p>}
+                      {change.evidenceUrl && <a className="source-link" href={change.evidenceUrl} target="_blank" rel="noopener noreferrer">Review evidence <Icon name="arrow" size={14} /></a>}
                     </article>
                   )) : <p className="history-empty">No status changes have been recorded.</p>}
                 </div>
@@ -770,6 +1309,40 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
 
       {menuOpen && <button type="button" aria-label="Close navigation menu" className="mobile-scrim" onClick={() => setMenuOpen(false)} />}
 
+      {legacyImportOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !legacyImporting) setLegacyImportOpen(false) }}>
+          <section className="report-modal legacy-import-modal" role="dialog" aria-modal="true" aria-labelledby="legacy-import-title" tabIndex={-1}>
+            <div className="modal-heading">
+              <div><span className="eyebrow">OPTIONAL LOCAL DATA MIGRATION</span><h2 id="legacy-import-title">Review browser-only reports</h2></div>
+              <button type="button" className="icon-button" aria-label="Close local report review" disabled={legacyImporting} onClick={() => setLegacyImportOpen(false)}><Icon name="close" /></button>
+            </div>
+            <p className="modal-intro">Nothing uploads until you select reports and choose Import. Each selected report is re-submitted by your signed-in account as Unverified; local status labels and review history are not treated as authenticated evidence. Original browser records are not deleted.</p>
+            <div className="legacy-import-list">
+              {storedData.incidents.map((incident) => (
+                <label key={incident.id} className="legacy-import-item">
+                  <input
+                    type="checkbox"
+                    checked={legacySelectedIds.includes(incident.id)}
+                    disabled={legacyImporting}
+                    onChange={(event) => setLegacySelectedIds((current) => event.target.checked
+                      ? [...current, incident.id]
+                      : current.filter((id) => id !== incident.id))}
+                  />
+                  <span><strong>{incident.area} · {incident.category}</strong><span>Observed {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(incident.observedAt))} · Local status: {incident.status}</span><small>{incident.description}</small></span>
+                </label>
+              ))}
+            </div>
+            {legacyImportFeedback && <p className="form-note" role="status">{legacyImportFeedback}</p>}
+            <div className="modal-actions">
+              <button className="button button-secondary" type="button" disabled={legacyImporting} onClick={() => setLegacyImportOpen(false)}>Cancel</button>
+              <button className="button button-primary" type="button" disabled={legacyImporting || !legacySelectedIds.length} onClick={() => { void handleLegacyImport() }}>
+                {legacyImporting ? 'Importing…' : `Import ${legacySelectedIds.length} selected`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {reportOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReportOpen(false) }}>
           <section ref={reportDialogRef} className="report-modal" role="dialog" aria-modal="true" aria-labelledby="report-modal-title" tabIndex={-1} onKeyDown={handleReportDialogKeyDown}>
@@ -777,23 +1350,28 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
             {reportSubmitted ? (
               <div className="submission-message">
                 <span className="submission-icon"><Icon name="check" size={21} /></span>
-                <p>Your report was added with <strong>Unverified</strong> status. It has not been sent to a municipality or independently confirmed.</p>
+                <p>Your report was added with <strong>Unverified</strong> status. {mode === 'supabase' ? 'It is now available in the shared AquaTrace service.' : 'It is saved only in this browser.'} It has not been independently confirmed or sent to a municipality.</p>
+                {selectedIncident && !isHistoricalIncident(selectedIncident) && <p className="form-note">Report ID: <code>{selectedIncident.publicId ?? selectedIncident.id}</code></p>}
                 {reportFeedback && <p className="form-error" role="status">{reportFeedback}</p>}
-                {!reportFeedback && <p className="form-note">Saved in this browser only.</p>}
+                {!reportFeedback && mode === 'demo' && <p className="form-note">Saved in this browser only.</p>}
                 <button className="button button-primary" type="button" onClick={() => setReportOpen(false)}>Done</button>
               </div>
             ) : (
               <>
-                <p className="modal-intro">Share what you observed. Reports are saved in this browser only and are not sent to an authority.</p>
-                <form noValidate onSubmit={submitReport}>
+                <p className="modal-intro">{mode === 'supabase'
+                  ? 'Share what you observed. The report is shared with AquaTrace users and starts Unverified; it is not sent to an authority.'
+                  : 'Share what you observed. Reports are saved in this browser only and are not sent to an authority.'}</p>
+                <form noValidate aria-busy={reportSubmitting} onSubmit={(event) => { void submitReport(event) }}>
                   <label className="form-label" htmlFor="report-area">Location or community <span className="required-mark">Required</span><input id="report-area" name="area" required maxLength={100} placeholder="e.g. Mamelodi, Tshwane" /></label>
+                  <label className="form-label" htmlFor="report-municipality">Municipality <span>Optional</span><input id="report-municipality" name="municipality" maxLength={120} placeholder="e.g. City of Tshwane" /></label>
                   <label className="form-label" htmlFor="report-category">Outage category <span className="required-mark">Required</span><select id="report-category" name="category" required defaultValue=""><option value="" disabled>Select a category</option>{reportCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
                   <label className="form-label" htmlFor="report-severity">Severity <span className="required-mark">Required</span><select id="report-severity" name="severity" required defaultValue=""><option value="" disabled>Select severity</option><option>High</option><option>Medium</option><option>Low</option></select></label>
                   <label className="form-label" htmlFor="report-observed">Date and time observed <span className="required-mark">Required</span><input id="report-observed" name="observedAt" type="datetime-local" required defaultValue={observedAtDefault} /></label>
                   <label className="form-label" htmlFor="report-description">Issue description <span className="required-mark">Required</span><textarea id="report-description" name="description" required maxLength={1000} rows={3} placeholder="Describe what you noticed…" /></label>
                   {reportFormError && <p className="form-error" role="alert">{reportFormError}</p>}
+                  {reportFeedback && <p className="form-error" role="alert">{reportFeedback}</p>}
                   <p className="form-note"><Icon name="alert" size={15} />Please do not include personal or sensitive information.</p>
-                  <div className="modal-actions"><button className="button button-secondary" type="button" onClick={() => setReportOpen(false)}>Cancel</button><button className="button button-primary" type="submit">Submit report <Icon name="arrow" size={16} /></button></div>
+                  <div className="modal-actions"><button className="button button-secondary" type="button" disabled={reportSubmitting} onClick={() => setReportOpen(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={reportSubmitting}>{reportSubmitting ? 'Saving…' : 'Submit report'} <Icon name="arrow" size={16} /></button></div>
                 </form>
               </>
             )}
@@ -805,7 +1383,11 @@ function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void
 }
 
 function App() {
-  const { user, logout } = useAuth()
+  const { user, logout, loading, passwordRecovery } = useAuth()
+  if (loading) {
+    return <main className="auth-loading" role="status">Loading your AquaTrace session…</main>
+  }
+  if (passwordRecovery) return <LoginPage />
   return user ? <Workspace user={user} onLogout={logout} /> : <LoginPage />
 }
 

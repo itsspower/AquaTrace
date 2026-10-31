@@ -63,6 +63,7 @@ export function canReviewIncidents(role: Role): boolean {
 }
 
 export function canAccessPage(role: Role, page: Page): boolean {
+  if (page === 'admin') return role === 'admin'
   return page !== 'review' || canReviewIncidents(role)
 }
 

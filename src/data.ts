@@ -1,8 +1,14 @@
 import { historicalIncidents } from './data/historicalIncidents'
 
-export type Page = 'dashboard' | 'reports' | 'review' | 'insights' | 'water-points' | 'details'
+export type Page = 'dashboard' | 'reports' | 'review' | 'insights' | 'water-points' | 'details' | 'admin'
 export type IncidentCategory = 'Water outage' | 'Low water pressure' | 'Water quality concern' | 'Other'
-export type IncidentStatus = 'Unverified' | 'Under review' | 'Confirmed' | 'Resolved' | 'Rejected'
+export type IncidentStatus =
+  | 'Unverified'
+  | 'Under review'
+  | 'More information requested'
+  | 'Confirmed'
+  | 'Resolved'
+  | 'Rejected'
 
 export interface IncidentUpdate {
   time: string
@@ -15,6 +21,8 @@ export interface IncidentStatusChange {
   previousStatus: IncidentStatus
   newStatus: IncidentStatus
   note: string
+  updatedBy?: string | null
+  evidenceUrl?: string | null
 }
 
 export interface Incident {
@@ -31,6 +39,14 @@ export interface Incident {
   description: string
   statusDescription: string
   updates: IncidentUpdate[]
+  publicId?: string
+  municipality?: string | null
+  reportedAt?: string
+  reporterId?: string
+  verificationClassification?: 'unverified' | 'reviewed' | 'corroborated' | 'externally_verified'
+  evidenceUrl?: string | null
+  legacyReportedLabel?: string | null
+  legacyReporterLabel?: string | null
 }
 
 export interface WaterPoint {
@@ -49,7 +65,7 @@ export const waterPoints: WaterPoint[] = [
   { id: 'point-004', name: 'KwaMashu Public Tap', area: 'KwaMashu, eThekwini', sourceType: 'Community tap', availability: 'Unavailable', lastVerified: 'Sample only' },
 ]
 
-const incidentStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'Confirmed', 'Resolved', 'Rejected']
+const incidentStatuses: IncidentStatus[] = ['Unverified', 'Under review', 'More information requested', 'Confirmed', 'Resolved', 'Rejected']
 const legacyIncidentStatuses = ['Investigating', 'Monitoring']
 const incidentCategories: IncidentCategory[] = ['Water outage', 'Low water pressure', 'Water quality concern', 'Other']
 const severities: Incident['severity'][] = ['High', 'Medium', 'Low']

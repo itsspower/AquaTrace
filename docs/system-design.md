@@ -1,75 +1,90 @@
 # AquaTrace system design
 
-## Problem and context
+## Purpose and evidence boundary
 
-AquaTrace explores how community observations about water interruptions and alternative water points could be collected and presented in one place. The context is South African communities where residents may need timely information during service interruptions. The application currently demonstrates interface and local-data workflows only; it does not provide live service information.
+AquaTrace explores whether a shared, carefully labelled information workflow can help residents report water-service interruptions, follow review updates, and find sourced information about alternatives. The underlying needs and value proposition remain hypotheses: there are no user interviews, usability sessions, partner commitments, or impact results in the repository.
 
-## Stakeholders and needs
+The app is not an outage detector, engineering diagnosis, municipal channel, emergency service, water-quality authority, or guarantee of current water availability. A community observation is not proof of an outage. A workflow state is not an official service determination.
 
-- **Residents** may need to record an observed interruption, see what has been reported nearby, and find possible alternative water sources. They need clear warnings when information is unverified.
-- **Community reviewers or local operators** may need to triage submissions, add context, and keep a visible status history. This prototype does not authenticate reviewers or establish their authority.
-- **Municipal service teams** could need concise, consistent, corroborated reports to investigate service issues. No municipality is connected to this system or represented as a partner.
-- **Community organisations and researchers** may need aggregate information to identify questions for further investigation, while avoiding claims based on incomplete or duplicate reports.
+## Current architecture and modes
 
-These are proposed stakeholder needs, not findings from interviews or user research.
+```mermaid
+flowchart TB
+  UI[React + TypeScript + Vite]
+  Auth[AuthProvider]
+  Demo[Demonstration credentials + browser session]
+  SupaAuth[Optional Supabase Auth]
+  Local[Browser localStorage reports]
+  Repos[Incident / water-point / admin repositories]
+  DB[(Supabase Postgres)]
+  Static[Static sourced historical dataset]
+  UI --> Auth
+  Auth --> Demo
+  Auth --> SupaAuth
+  UI --> Local
+  UI --> Repos
+  Repos --> DB
+  UI --> Static
+```
 
-## Symptoms, possible causes, and what remains unverified
+By default, the app uses the demonstration account list and browser storage. This mode is intentionally not secure: the client contains the public demo credentials, the session is editable, and the records are not shared across browsers. The optional Supabase client is activated only when both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured. The migration in `supabase/migrations/` is prepared but unapplied; no project credentials were supplied. A configured browser key is public, so database RLS and server-side RPC role checks—not client visibility—must enforce access.
 
-Possible **symptoms** include resident-reported interruptions, low pressure, or concerns about water quality. Reports in this app are observations and are not proof that a service problem occurred.
+`src/auth/AuthProvider.tsx` centralizes mode selection, session loading, registration, login, recovery, logout, and account role resolution. `src/data/incidentRepository.ts`, `waterPointRepository.ts`, and `adminRepository.ts` isolate Supabase calls. Historical incidents remain a static read-only dataset in `src/data/historicalIncidents.ts`. Existing local reports are preserved; their shared import requires explicit user action and is idempotent by their local ID.
 
-Potential underlying causes could include infrastructure faults, planned maintenance, supply constraints, local distribution issues, or inaccurate or duplicate reporting. These are hypotheses only. AquaTrace has no operational, engineering, or municipal data to identify root causes.
+## Roles and authorization
 
-To substantiate a cause or recurring service issue would require independently sourced service records, consistent location and time information, corroborating observations, and appropriate technical investigation. None is provided by this prototype.
+| Capability | Resident | Reviewer | Administrator |
+|---|---:|---:|---:|
+| View dashboard, community reports, history, insights, water-point directory | Yes | Yes | Yes |
+| Submit community report | Yes | Yes | Yes |
+| Review incident and change its status with explanation | No | Yes | Yes |
+| Add/review a sourced water point | No | Yes | Yes |
+| View account role and audit controls | No | No | Yes |
+| Change another user's role with an explanation | No | No | Yes |
 
-## System relationships and information flow
+Demo mode applies navigation and control visibility in the client only. It demonstrates role-specific workflows but is not an authorization boundary. Supabase mode gives new accounts the resident role; the project owner must bootstrap the first admin. RLS denies direct client mutations to review fields, while security-definer RPCs verify reviewer/admin authority and atomically append history. Role assignment has a separate admin-checked RPC and role-change history. The RPC blocks self-role changes and demotion of the final administrator.
 
-1. A resident enters a location, category, severity, observation date/time, and description in the browser.
-2. The app labels the report **Unverified** and stores it in that browser's localStorage when available.
-3. A local reviewer can select a status and add an optional note. The browser records the previous and new status with a timestamp.
-4. A separate static historical dataset contains sourced incidents. These records are read-only, show their source and evidence classification, and state what was reported at publication. Dashboard and insights distinguish historical records from community submissions; community review labels do not modify historical records.
-5. Repeat-location and observed-month summaries use only user-submitted browser-local reports. Historical records are counted once in location and category summaries; a multi-area historical notice is assigned one combined location group rather than counted once per named area.
-6. The prototype has no outgoing reporting path: reports and reviewer changes are not sent to authorities or other users.
+## Data domains and status semantics
 
-## Historical dataset and evidence
+- **Community incidents:** mutable observations submitted by authenticated users (or browser-local demo submissions). A new shared incident is `unverified`; it has a generated public identifier, reporter, timestamps, and an idempotency key.
+- **Incident status:** describes the workflow (`Unverified`, `Under review`, `More information requested`, `Confirmed`, `Resolved`, `Rejected`). It does not by itself establish the incident as true or a repair as complete.
+- **Verification classification:** separately records `unverified`, `reviewed`, `corroborated`, or `externally_verified`. `reviewed` means a designated AquaTrace reviewer examined the report, not that an external authority verified it. Corroborated/external classifications require an HTTPS evidence URL in the database function; provenance still needs human interpretation.
+- **Status history:** records prior/new workflow and classification values, reviewer identity, explanation, evidence URL, and timestamp. Shared review writes the incident update and history in one database transaction. Local mode keeps its existing client-side history and 240-character note constraint.
+- **Historical incidents:** a separate, read-only and sparsely populated dataset with original source links, publication context, and evidence classification. It is not merged into community data, and publication-time status is not live status.
+- **Water points:** connected records require an original HTTPS source and begin `unverified` with availability `unknown`. Verification of a location is distinct from an availability observation, both with timestamps and history. No locations or coordinates have been seeded because a verified source dataset has not been established. Demo-mode examples are explicitly fictional.
+- **Profiles and role audit:** the auth trigger creates a resident profile and records that initial role. Admin changes include an explanation and are auditable. First-admin bootstrap must be performed by the project owner.
 
-The current dataset is `src/data/historicalIncidents.ts`. Its intended coverage window is 1 January 2025 through 31 December 2026, but it contains records only through its 27 October 2026 snapshot date. The two included entries are City of Tshwane official statements, published 18 July 2025 and 26 October 2026. The first reports water-supply interruptions during reservoir maintenance; the second announces dated supply restrictions and warns that low pressure or temporary interruptions may occur. Neither is presented as current service status.
+## Shared reporting flow (requires setup)
 
-An `official_statement` classification means the official source directly documents the statement, not that AquaTrace independently verified it. `news_report` identifies a traceable news organisation's reporting, and `unverified_claim` identifies a reported claim not independently confirmed by the available sources. Every record retains the direct source URL, title, publisher, publication date, and notes about missing or limited details. Do not infer precise incident dates, locations, causes, or restoration status beyond what the source says.
+1. Supabase Auth authenticates the person; the app loads the profile role before rendering the workspace.
+2. The resident submits a report; RLS allows insert only for their own reporter ID and the initial unverified state.
+3. The repository requests shared reports and status history. The UI refreshes shared records periodically; it does not use a realtime subscription.
+4. A reviewer/admin uses the `review_incident` RPC. The database checks role, input, and evidence constraints, locks the incident, updates it, and appends history transactionally.
+5. Local reports are not auto-uploaded. An explicit import RPC reattributes each report to the signed-in importer, retains original date fields and the demo-account label where available, resets it to Unverified, and does not import unauthenticated local review history. Reports created before local reporter IDs were recorded cannot recover that identity. A unique local identifier makes repeated imports idempotent. Local browser data remains in place.
 
-Coverage is sparse and non-exhaustive. Research leads for Ekurhuleni and eThekwini were not added because their original source material could not be inspected and substantiated. Media coverage is incomplete, so inclusion and report counts do not measure actual outage frequency. Research exclusions and pending leads are tracked in [research-backlog.md](research-backlog.md).
+Network failures are shown as errors rather than silently switching shared mutations to local writes. Since this mode is not connected, offline retry/reconciliation and live database behavior still need project-level validation.
 
-To add a record, inspect its original source, verify the exact title, URL and publication date, enter only supported incident details, use a unique stable ID and allowed evidence/category values, and explain uncertainty or conflicts in `notes`. Do not create separate incidents for multiple reports of the same event. The module validates IDs, date formats and bounds, URLs, source attribution, and allowed classifications when loaded.
+## System relationships and feedback loops
 
-Historical records and user-submitted community reports remain separate. Community reports are browser-local, unverified by default, and can receive local review labels and status history; those labels are not external verification. Historical status is status at publication, not live status. Neither dataset is exhaustive, and neither establishes live water availability.
+**Intended reinforcing loop (hypothesis):** a useful report flow may increase structured observations; reviewer explanations may make updates more understandable; clearer updates may support trust and continued reporting. This loop depends on sufficient participation, timely review, accurate locations, and trustworthy sourcing. None of those conditions has been tested.
 
-The water-point directory remains fictional demonstration content and is labelled accordingly. It is not evidence that a water point exists or is available.
+**Potential balancing loop:** more submissions may increase duplicate triage and reviewer workload; slower updates can reduce usefulness and participation. A pilot should track completeness, duplicate handling, review workload and delays before promoting broad adoption.
 
-## Proposed intervention and boundaries
+**Evidence/availability loop:** a source can support that a water point exists or was described at a certain date, while a later availability update can become stale. The UI and data model therefore distinguish location verification from availability and timestamps; neither is a guarantee of current water.
 
-The proposed intervention is a lightweight reporting and information interface: structured community observations, explicit uncertainty labels, visible local review history, and cautious summaries that may help people decide what to investigate next.
+**Coverage bias loop:** more connected or media-covered areas may produce more reports and historical entries, appearing more affected in app summaries. Counts reflect entered records, not true outage incidence. Small or uneven datasets must not be used to rank municipalities or infer need.
 
-The system can organize entered information and expose patterns in that information. It cannot verify an outage, determine root cause, issue official service updates, predict failures, guarantee water-point availability, or replace municipal incident-management processes. Reviewer status changes are local annotations, not official determinations.
+## Dependencies and risks
 
-## Risks, assumptions, and limitations
+- Supabase project, email configuration, correct origins, applied schema, first-admin bootstrap, and reviewed access policies are prerequisites for shared use.
+- Migration and RPCs are not yet exercised against PostgreSQL/Supabase. Validate on a disposable project before production consideration.
+- No source-backed water-point registry, current water availability feed, municipal integration, moderation policy, privacy review, or deployment is configured.
+- The browser client cannot protect demo credentials or local role state. Never reuse demo passwords or present demo mode as production access management.
+- Shared history and role-audit retention, data deletion, abuse reporting, rate limits, privacy/legal basis, backups and recovery need project policy before real data collection.
+- Realtime subscriptions are not configured; shared reports refresh on a polling interval. Network interruption and retry behavior need live integration tests.
+- Two dated official City of Tshwane notices are currently included; historical coverage is sparse and non-exhaustive. Source inclusion does not independently verify cause, household impact or restoration.
+- The official Credify challenge brief/category/judging requirements are absent. Challenge alignment remains unconfirmed and must not be guessed.
 
-- LocalStorage is tied to one browser profile and device; data can be cleared, unavailable, or edited by the browser user.
-- The review interface has no authentication, authorization, audit server, or secure operator controls.
-- User reports may be incomplete, inaccurate, duplicated, or malicious. Free-text area spelling variations can split one location into multiple groups.
-- A report count is not a count of distinct outages. Repeated reports may describe one event or different observations.
-- Historical coverage and media reporting are incomplete; more frequently reported or covered locations are not necessarily experiencing more outages.
-- The remaining water-point directory is fictional demonstration content, not verified evidence.
-- “Confirmed” and “Resolved” are selectable workflow states, not independently validated facts in this local prototype.
-- No connectivity to municipal services, verified water-point availability, interviews, research, pilot data, partnerships, or impact results are claimed.
+## Evaluation plan, not results
 
-## Proposed pilot measures
-
-The following are proposed measures for a future, consent-based pilot, not results:
-
-- **Report completeness:** proportion of submissions with usable location, category, description, and observation time.
-- **Duplicate review workload:** share of submissions reviewers identify as possible duplicates after manual comparison.
-- **Review usability:** time and error rate for a trained reviewer to find a report and record a status change with an explanatory note.
-- **Information clarity:** participant ability to distinguish fictional, user-submitted, reviewed, and externally verified information in usability tasks.
-- **Data persistence reliability:** proportion of test submissions and status histories that remain available after a browser restart on the same device.
-- **Responsible use:** number and type of misunderstandings about verification, municipality contact, and water-point availability observed during testing.
-
-Measures should be defined with community participants before a pilot. A pilot would need appropriate consent, privacy safeguards, and a verified operational partner before handling real service workflows.
+Proposed measures include usable report completeness, duplicate review burden, review time/errors, participant understanding of evidence labels, data persistence after restart, and misunderstandings about municipal confirmation or water-point availability. A consent-based formative task plan is in [user-testing-plan.md](user-testing-plan.md); the blank results form is [user-testing-results-template.md](user-testing-results-template.md). No sessions have been conducted; no user value or impact is established.

@@ -2,6 +2,14 @@
   min-height: 100vh;
 }
 
+.auth-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .sidebar {
   position: fixed;
   z-index: 5;
@@ -2280,5 +2288,265 @@
 @media (max-width: 620px) {
   .sidebar-account {
     padding: 10px;
+  }
+}
+
+.shared-sync-notice,
+.legacy-import-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -8px 0 15px;
+  padding: 10px 12px;
+  border: 1px solid #d5e5ea;
+  border-radius: 5px;
+  color: #355d6b;
+  background: #f0f7f9;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.shared-sync-notice button {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid #c9dce2;
+  border-radius: 4px;
+  color: #315d6c;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+.shared-sync-notice button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.shared-sync-error {
+  border-color: #edd7d2;
+  color: #874b42;
+  background: #fbf0ee;
+}
+
+.legacy-import-notice {
+  align-items: flex-start;
+  border-color: #e7dbc1;
+  color: #67522c;
+  background: #fbf7ed;
+}
+
+.legacy-import-notice p {
+  margin: 0;
+}
+
+.legacy-import-notice .button {
+  flex: 0 0 auto;
+}
+
+.shared-feedback {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid #d5e5ea;
+  border-radius: 5px;
+  color: #355d6b;
+  background: #f0f7f9;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.water-points-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.water-point-contribution {
+  padding: 18px;
+}
+
+.water-point-add-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.water-point-source-review,
+.water-point-add-actions {
+  grid-column: 1 / -1;
+}
+
+.water-point-add-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shared-water-point-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.shared-water-point-card h3,
+.shared-water-point-card .point-area {
+  margin: 0;
+}
+
+.shared-water-point-card .point-area {
+  align-items: flex-start;
+  line-height: 1.5;
+}
+
+.shared-water-point-card .availability {
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: #edf2f4;
+  text-transform: capitalize;
+}
+
+.shared-water-point-card .availability-available {
+  color: #356b52;
+  background: #e9f4ee;
+}
+
+.shared-water-point-card .availability-temporarily_unavailable,
+.shared-water-point-card .availability-closed_or_removed {
+  color: #8c4c43;
+  background: #fbefed;
+}
+
+.shared-water-point-card .availability-unknown {
+  color: #755e30;
+  background: #f8f3e7;
+}
+
+.point-coordinate,
+.point-trust,
+.point-source {
+  margin: 0;
+  color: #596b76;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.point-source {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.water-point-history {
+  padding-top: 9px;
+  border-top: 1px solid #eef1f2;
+  color: #526570;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.water-point-history summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.water-point-history ol {
+  display: grid;
+  gap: 8px;
+  margin: 9px 0;
+  padding-left: 18px;
+}
+
+.water-point-history li span {
+  display: block;
+}
+
+.water-point-history li p {
+  margin: 3px 0;
+}
+
+.water-point-review-form {
+  display: grid;
+  gap: 9px;
+  padding-top: 10px;
+  border-top: 1px solid #eef1f2;
+}
+
+.water-point-review-form .button {
+  justify-self: start;
+}
+
+.legacy-import-modal {
+  max-height: min(85vh, 760px);
+  overflow-y: auto;
+}
+
+.legacy-import-list {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 15px 0;
+}
+
+.legacy-import-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #e3eaed;
+  border-radius: 5px;
+  background: #fbfdfd;
+  cursor: pointer;
+}
+
+.legacy-import-item input {
+  margin-top: 3px;
+  accent-color: var(--blue);
+}
+
+.legacy-import-item > span,
+.legacy-import-item > span > span,
+.legacy-import-item small {
+  display: block;
+}
+
+.legacy-import-item > span {
+  min-width: 0;
+}
+
+.legacy-import-item strong {
+  color: var(--navy);
+  font-size: 10px;
+}
+
+.legacy-import-item > span > span,
+.legacy-import-item small {
+  margin-top: 4px;
+  color: #61727e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.legacy-import-item small {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .shared-sync-notice,
+  .legacy-import-notice,
+  .water-point-add-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .water-point-add-form {
+    grid-template-columns: 1fr;
+  }
+
+  .water-point-source-review,
+  .water-point-add-actions {
+    grid-column: auto;
   }
 }

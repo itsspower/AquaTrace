@@ -53,15 +53,20 @@ function copyWithFallback(text: string) {
 }
 
 function LoginPage() {
-  const { login } = useAuth()
+  const { login, register, requestPasswordReset, updatePassword, passwordRecovery, mode, authError } = useAuth()
   const emailId = useId()
   const passwordId = useId()
   const errorId = useId()
+  const nameId = useId()
   const [email, setEmail] = useState('')
+  const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [formMode, setFormMode] = useState<'login' | 'register' | 'recovery'>('login')
+  const activeFormMode = passwordRecovery ? 'reset' : formMode
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [success, setSuccess] = useState('')
   const [copyFeedback, setCopyFeedback] = useState('')
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -69,22 +74,46 @@ function LoginPage() {
     if (loading) return
 
     const normalizedEmail = email.trim()
-    if (!normalizedEmail || !password) {
-      setError('Enter both your email address and password.')
+    if ((activeFormMode !== 'reset' && !normalizedEmail) || (activeFormMode !== 'recovery' && !password) || (activeFormMode === 'register' && !name.trim())) {
+      setError(activeFormMode === 'register'
+        ? 'Enter your name, email address and password.'
+        : activeFormMode === 'recovery' ? 'Enter your email address.'
+          : activeFormMode === 'reset' ? 'Enter a new password.'
+            : 'Enter both your email address and password.')
       return
     }
-    if (!emailPattern.test(normalizedEmail)) {
+    if (activeFormMode !== 'reset' && !emailPattern.test(normalizedEmail)) {
       setError('Enter a valid email address, for example resident@aquatrace.demo.')
       return
     }
 
     setError('')
+    setSuccess('')
     setLoading(true)
-    const result = await login(normalizedEmail, password)
-    if (!result.ok) {
-      setError(result.error ?? 'Sign-in failed. Check your credentials and try again.')
+    try {
+      const result = activeFormMode === 'register'
+        ? await register(name, normalizedEmail, password)
+        : activeFormMode === 'recovery'
+          ? await requestPasswordReset(normalizedEmail)
+          : activeFormMode === 'reset'
+            ? await updatePassword(password)
+            : await login(normalizedEmail, password)
+      if (!result.ok) {
+        setError(result.error ?? 'The request could not be completed. Check your details and try again.')
+      } else if (result.message) {
+        setSuccess(result.message)
+      }
+    } catch {
+      setError('The authentication service is unavailable. Check your connection and try again.')
+    } finally {
       setLoading(false)
     }
+  }
+
+  function changeFormMode(nextMode: 'login' | 'register' | 'recovery') {
+    setFormMode(nextMode)
+    setError('')
+    setSuccess('')
   }
 
   async function copyCredentials(account: DemoAccount) {
@@ -114,32 +143,57 @@ function LoginPage() {
           </div>
 
           <div className="login-hero-copy">
-            <span className="login-eyebrow">DEMONSTRATION ACCESS</span>
+            <span className="login-eyebrow">{mode === 'supabase' ? 'ACCOUNT ACCESS' : 'DEMONSTRATION ACCESS'}</span>
             <h1 id="login-title">A clearer view of water service interruptions.</h1>
-            <p>Sign in with a demonstration account to explore community reports, sourced historical incidents and local review controls.</p>
+            <p>{mode === 'supabase'
+              ? 'Sign in to share community reports, follow sourced incident information and find water-point updates.'
+              : 'Sign in with a demonstration account to explore community reports, sourced historical incidents and local review controls.'}</p>
           </div>
 
-          <ul className="login-role-list" aria-label="Demonstration roles">
+          {mode === 'demo' && <ul className="login-role-list" aria-label="Demonstration roles">
             {(Object.keys(roleLabels) as Role[]).map((role) => (
               <li key={role}>
                 <span className="login-role-dot" aria-hidden="true" />
                 <span><strong>{roleLabels[role]}</strong>{roleSummaries[role]}</span>
               </li>
             ))}
-          </ul>
+          </ul>}
 
-          <p className="login-demo-note"><strong>Demonstration mode.</strong> Credentials and sessions are stored in your browser only. Do not enter real or personal credentials.</p>
+          {mode === 'demo'
+            ? <p className="login-demo-note"><strong>Demonstration mode.</strong> Credentials and sessions are stored in your browser only. Do not enter real or personal credentials.</p>
+            : <p className="login-demo-note"><strong>Account roles are assigned by authorised administrators.</strong> New registrations receive resident access.</p>}
         </section>
 
         <section className="login-panel" aria-labelledby="login-form-title">
           <div className="login-form-heading">
             <span className="login-eyebrow">WELCOME BACK</span>
-            <h2 id="login-form-title">Sign in to AquaTrace</h2>
-            <p>Use one of the demo accounts below to enter the workspace.</p>
+            <h2 id="login-form-title">
+              {activeFormMode === 'register' ? 'Create your account' : activeFormMode === 'recovery' || activeFormMode === 'reset' ? 'Reset your password' : 'Sign in to AquaTrace'}
+            </h2>
+            <p>{mode === 'supabase'
+              ? 'Use your AquaTrace account to access shared community information.'
+              : 'Use one of the demo accounts below to enter the workspace.'}</p>
           </div>
 
           <form className="login-form" noValidate aria-busy={loading} onSubmit={handleSubmit}>
-            <label className="login-field" htmlFor={emailId}>
+            {activeFormMode === 'register' && (
+              <label className="login-field" htmlFor={nameId}>
+                Full name
+                <input
+                  id={nameId}
+                  name="name"
+                  type="text"
+                  autoComplete="name"
+                  maxLength={120}
+                  value={name}
+                  onChange={(event) => { setName(event.target.value); setError('') }}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? errorId : undefined}
+                  placeholder="Your name"
+                />
+              </label>
+            )}
+            {activeFormMode !== 'reset' && <label className="login-field" htmlFor={emailId}>
               Email address
               <input
                 id={emailId}
@@ -150,47 +204,66 @@ function LoginPage() {
                 spellCheck={false}
                 value={email}
                 onChange={(event) => { setEmail(event.target.value); if (error) setError('') }}
-                aria-invalid={Boolean(error)}
+                aria-invalid={Boolean(error || authError)}
                 aria-describedby={error ? errorId : undefined}
-                placeholder="resident@aquatrace.demo"
+                placeholder={mode === 'demo' ? 'resident@aquatrace.demo' : 'you@example.com'}
               />
-            </label>
+            </label>}
 
-            <label className="login-field" htmlFor={passwordId}>
-              Password
-              <span className="login-password-wrap">
-                <input
-                  id={passwordId}
-                  name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => { setPassword(event.target.value); if (error) setError('') }}
-                  aria-invalid={Boolean(error)}
-                  aria-describedby={error ? errorId : undefined}
-                  placeholder="Enter your demo password"
-                />
-                <button
-                  className="login-password-toggle"
-                  type="button"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  aria-pressed={showPassword}
-                  onClick={() => setShowPassword((current) => !current)}
-                >
-                  <PasswordIcon visible={showPassword} />
-                </button>
-              </span>
-            </label>
+            {activeFormMode !== 'recovery' && (
+              <label className="login-field" htmlFor={passwordId}>
+                {activeFormMode === 'reset' || activeFormMode === 'register' ? 'New password' : 'Password'}
+                <span className="login-password-wrap">
+                  <input
+                    id={passwordId}
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete={activeFormMode !== 'login' ? 'new-password' : 'current-password'}
+                    minLength={8}
+                    value={password}
+                    onChange={(event) => { setPassword(event.target.value); if (error) setError('') }}
+                    aria-invalid={Boolean(error)}
+                    aria-describedby={error ? errorId : undefined}
+                    placeholder={mode === 'demo' ? 'Enter your demo password' : 'Enter your password'}
+                  />
+                  <button
+                    className="login-password-toggle"
+                    type="button"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    onClick={() => setShowPassword((current) => !current)}
+                  >
+                    <PasswordIcon visible={showPassword} />
+                  </button>
+                </span>
+              </label>
+            )}
 
-            {error && <p id={errorId} className="login-error" role="alert">{error}</p>}
+            {(error || authError || mode === 'misconfigured') && (
+              <p id={errorId} className="login-error" role="alert">
+                {error || authError || 'Authentication is misconfigured. Set the Supabase project URL and public client key.'}
+              </p>
+            )}
+            {success && <p className="login-success" role="status">{success}</p>}
 
-            <button className="login-submit" type="submit" disabled={loading}>
-              {loading ? (<><span className="login-spinner" aria-hidden="true" />Signing in…</>) : (<>Sign in <span aria-hidden="true">→</span></>)}
+            <button className="login-submit" type="submit" disabled={loading || mode === 'misconfigured'}>
+              {loading
+                ? <><span className="login-spinner" aria-hidden="true" />{activeFormMode === 'register' ? 'Creating account…' : activeFormMode === 'recovery' ? 'Sending link…' : activeFormMode === 'reset' ? 'Updating password…' : 'Signing in…'}</>
+                : <>{activeFormMode === 'register' ? 'Create account' : activeFormMode === 'recovery' ? 'Send recovery link' : activeFormMode === 'reset' ? 'Update password' : 'Sign in'} <span aria-hidden="true">→</span></>}
             </button>
-            <p className="login-storage-note">Your demonstration session persists in this browser until you sign out.</p>
+            {mode === 'supabase' && activeFormMode === 'login' && (
+              <div className="login-auth-links">
+                <button type="button" onClick={() => changeFormMode('register')}>Create an account</button>
+                <button type="button" onClick={() => changeFormMode('recovery')}>Forgot password?</button>
+              </div>
+            )}
+            {mode === 'supabase' && activeFormMode !== 'login' && activeFormMode !== 'reset' && (
+              <button className="login-mode-switch" type="button" onClick={() => changeFormMode('login')}>Back to sign in</button>
+            )}
+            {mode === 'demo' && <p className="login-storage-note">This local demonstration session persists in this browser until you sign out. It is not secure production authentication.</p>}
           </form>
 
-          <section className="demo-accounts" aria-labelledby="demo-accounts-title">
+          {mode === 'demo' && <section className="demo-accounts" aria-labelledby="demo-accounts-title">
             <div className="demo-heading">
               <div>
                 <h2 id="demo-accounts-title">Demo Accounts</h2>
@@ -214,7 +287,7 @@ function LoginPage() {
               ))}
             </ul>
             <p className="demo-copy-feedback" role="status" aria-live="polite">{copyFeedback}</p>
-          </section>
+          </section>}
         </section>
       </div>
     </main>
