@@ -13,6 +13,14 @@ import {
   type HistoricalIncident,
   type HistoricalIncidentCategory,
 } from './data/historicalIncidents'
+import { useAuth } from './auth/AuthContext'
+import LoginPage from './auth/LoginPage'
+import {
+  canAccessPage,
+  canReviewIncidents,
+  roleLabels,
+  type SessionUser,
+} from './auth/demoAccounts'
 import './App.css'
 
 const pages: { id: Page; label: string; icon: 'grid' | 'alert' | 'drop' | 'check' }[] = [
@@ -66,7 +74,7 @@ function Icon({
   name,
   size = 18,
 }: {
-  name: 'grid' | 'alert' | 'drop' | 'plus' | 'search' | 'chevron' | 'close' | 'menu' | 'arrow' | 'clock' | 'pin' | 'check'
+  name: 'grid' | 'alert' | 'drop' | 'plus' | 'search' | 'chevron' | 'close' | 'menu' | 'arrow' | 'clock' | 'pin' | 'check' | 'logout'
   size?: number
 }) {
   const paths: Record<typeof name, React.ReactNode> = {
@@ -82,6 +90,7 @@ function Icon({
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
     pin: <><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></>,
     check: <><path d="m5 12 4 4L19 6" /></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></>,
   }
 
   return (
@@ -178,7 +187,7 @@ function HistoricalIncidentRow({
   )
 }
 
-function App() {
+function Workspace({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
   const reportTriggerRef = useRef<HTMLButtonElement>(null)
   const reportDialogRef = useRef<HTMLElement>(null)
   const [page, setPage] = useState<Page>('dashboard')
@@ -197,6 +206,8 @@ function App() {
   const [reportFeedback, setReportFeedback] = useState('')
   const [observedAtDefault, setObservedAtDefault] = useState('')
   const [reviewFeedback, setReviewFeedback] = useState<Record<string, string>>({})
+  const canReview = canReviewIncidents(user.role)
+  const initials = user.name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
 
   const allIncidents = storedData.incidents
   const allRecordCount = allIncidents.length + historicalIncidents.length
@@ -279,6 +290,11 @@ function App() {
   }), [query, pointFilter])
 
   function navigate(nextPage: Page) {
+    if (!canAccessPage(user.role, nextPage)) {
+      setPage('dashboard')
+      setMenuOpen(false)
+      return
+    }
     setPage(nextPage)
     setMenuOpen(false)
     setQuery('')
@@ -369,6 +385,10 @@ function App() {
 
   function updateIncidentStatus(event: FormEvent<HTMLFormElement>, incident: Incident) {
     event.preventDefault()
+    if (!canReview) {
+      setReviewFeedback((current) => ({ ...current, [incident.id]: 'Your role cannot update incident statuses.' }))
+      return
+    }
     const formData = new FormData(event.currentTarget)
     const nextStatus = String(formData.get('status') ?? '') as IncidentStatus
     const note = String(formData.get('note') ?? '').trim()
@@ -456,7 +476,7 @@ function App() {
         </a>
         <div className="nav-section-label">WORKSPACE</div>
         <nav className="side-nav">
-          {pages.map((item) => (
+          {pages.filter((item) => canAccessPage(user.role, item.id)).map((item) => (
             <button
               className={`nav-link ${page === item.id || (page === 'details' && item.id === 'reports') ? 'nav-link-active' : ''}`}
               aria-current={page === item.id || (page === 'details' && item.id === 'reports') ? 'page' : undefined}
@@ -471,6 +491,18 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <div className="sidebar-account">
+            <div className="sidebar-account-identity">
+              <span className="sidebar-account-avatar" aria-hidden="true">{initials}</span>
+              <div className="sidebar-account-copy">
+                <strong>{user.name}</strong>
+                <span>{roleLabels[user.role]} · Demo session</span>
+              </div>
+            </div>
+            <button className="logout-button" type="button" onClick={onLogout}>
+              <Icon name="logout" size={15} /><span>Log out</span>
+            </button>
+          </div>
           <div className="community-card">
             <span className="community-icon"><Icon name="pin" size={17} /></span>
             <div><strong>Community first</strong><p>Local information, made clearer.</p></div>
@@ -486,9 +518,12 @@ function App() {
           </button>
           <div className="mobile-brand"><span className="brand-mark"><Icon name="drop" size={18} /></span><strong>AquaTrace</strong></div>
           <div className="topbar-context"><span>South Africa</span><span className="context-separator">/</span><span>Community dashboard</span></div>
-          <button ref={reportTriggerRef} className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
-            <Icon name="plus" size={17} /><span>Report an outage</span>
-          </button>
+          <div className="topbar-actions">
+            <span className={`role-pill role-pill-${user.role}`}>{roleLabels[user.role]}</span>
+            <button ref={reportTriggerRef} className="button button-primary top-report-button" type="button" onClick={() => { setReportOpen(true); setReportSubmitted(false); setReportFormError(''); setReportFeedback(''); setObservedAtDefault(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)) }}>
+              <Icon name="plus" size={17} /><span>Report an outage</span>
+            </button>
+          </div>
         </header>
 
         <main className="content">
@@ -607,11 +642,11 @@ function App() {
             </section>
           )}
 
-          {page === 'review' && (
+          {page === 'review' && canReview && (
             <section className="review-view">
               <div className="review-disclaimer">
                 <Icon name="alert" size={17} />
-                <p><strong>Community reports only.</strong> This reviewer workflow is not authenticated or secure, and status changes are saved only in this browser. Historical source records are read-only and no municipality receives reports or updates.</p>
+                <p><strong>Community reports only.</strong> Access is limited to the Incident Reviewer and Administrator demo roles. This is demonstration authentication, not production security, and status changes are saved only in this browser. Historical source records are read-only and no municipality receives reports or updates.</p>
               </div>
               {!storedData.incidents.length && (
                 <div className="empty-state review-empty" role="status">
@@ -708,7 +743,7 @@ function App() {
                 <div className="detail-report-id">Report ID: <code>{selectedIncident.id}</code></div>
                 <div className="detail-meta"><span><Icon name="pin" size={16} />{selectedIncident.area}</span><span><Icon name="clock" size={16} />Reported {selectedIncident.reported}</span><span>Observed: {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selectedIncident.observedAt))}</span></div>
                 <div className="detail-sample"><ReportOriginLabel /><span className="detail-category">{selectedIncident.category}</span></div>
-                <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>
+                {canReview && <button className="button button-secondary detail-review-button" type="button" onClick={() => navigate('review')}>Open reviewer workflow</button>}
                 <div className="detail-section"><h3>About this report</h3><p>{selectedIncident.description}</p></div>
                 <div className="detail-section"><h3>What this status means</h3><p>{selectedIncident.statusDescription}</p></div>
                 <div className="detail-disclaimer"><Icon name="alert" size={16} /><span>This community-submitted report and its status are local prototype records. AquaTrace has not independently verified it or contacted an authority.</span></div>
@@ -767,6 +802,11 @@ function App() {
       )}
     </div>
   )
+}
+
+function App() {
+  const { user, logout } = useAuth()
+  return user ? <Workspace user={user} onLogout={logout} /> : <LoginPage />
 }
 
 export default App
